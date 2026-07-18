@@ -53,6 +53,12 @@ function isPermissionError(err: unknown): boolean {
   );
 }
 
+function isNotFoundError(err: unknown): boolean {
+  const e = err as DOMException | undefined;
+  if (!e) return false;
+  return e.name === 'NotFoundError';
+}
+
 export interface UseNotesResult {
   items: Item[];
   loading: boolean;
@@ -155,8 +161,17 @@ export function useNotes(
         setSaveStatus('save-failed');
         return 'conflict';
       } catch (err) {
-        if (isPermissionError(err)) markPermissionLost();
-        else console.error('External change check failed', err);
+        if (isPermissionError(err)) {
+          markPermissionLost();
+        } else if (isNotFoundError(err)) {
+          // The file was moved/renamed/deleted on disk since the handle was
+          // captured. Not an error worth surfacing — just skip the check so
+          // the in-memory content is preserved. A subsequent folder rescan
+          // (or user action) will reconcile the tree.
+          return 'skip';
+        } else {
+          console.error('External change check failed', err);
+        }
         return 'error';
       }
     },
