@@ -97,6 +97,7 @@ export function useNotes(
   const fileHandlesRef = useRef<Map<string, FileSystemFileHandle>>(new Map());
   const dirHandlesRef = useRef<Map<string, FileSystemDirectoryHandle>>(new Map());
   const itemsRef = useRef<Item[]>([]);
+  const activeIdRef = useRef<string | null>(null);
   const saveTimerRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const lastMtimeRef = useRef<Map<string, number>>(new Map());
 
@@ -106,10 +107,57 @@ export function useNotes(
     itemsRef.current = items;
   }, [items]);
 
+  useEffect(() => {
+    activeIdRef.current = activeId;
+  }, [activeId]);
+
   const markPermissionLost = useCallback(() => {
     setPermissionLost(true);
     setSaveStatus('save-failed');
   }, []);
+
+  // Shared external-change check. Reads the file handle's current on-disk
+  // lastModified, compares against lastMtimeRef, and only surfaces a conflict
+  // when the disk text actually differs from the in-memory content. If only
+  // the mtime moved (e.g. a no-op save), silently updates lastMtimeRef.
+  // Returns 'conflict' | 'clean' | 'error' | 'skip'.
+  const checkExternalChange = useCallback(
+    async (id: string): Promise<'conflict' | 'clean' | 'error' | 'skip'> => {
+      if (!isDiskMode) return 'skip';
+      const handle = fileHandlesRef.current.get(id);
+      if (!handle) return 'skip';
+      const note = itemsRef.current.find(
+        (i): i is Note => i.id === id && i.type === 'note'
+      );
+      if (!note) return 'skip';
+      try {
+        const currentFile = await handle.getFile();
+        const knownMtime = lastMtimeRef.current.get(id);
+        if (knownMtime === undefined) {
+          lastMtimeRef.current.set(id, currentFile.lastModified);
+          return 'clean';
+        }
+        if (currentFile.lastModified === knownMtime) return 'clean';
+        const diskContent = await currentFile.text();
+        lastMtimeRef.current.set(id, currentFile.lastModified);
+        if (diskContent === note.content) return 'clean';
+        setConflict({
+          id,
+          title: note.title,
+          mine: note.content,
+          disk: diskContent,
+          diskMtime: currentFile.lastModified,
+        });
+        setSaveStatus('save-failed');
+        return 'conflict';
+      } catch (err) {
+        if (isPermissionError(err)) markPermissionLost();
+        else console.error('External change check failed', err);
+        return 'error';
+      }
+    },
+    [isDiskMode, markPermissionLost]
+  );
 
   // Initial load: scan folder (disk mode) or load from IndexedDB (local mode).
   useEffect(() => {
@@ -291,22 +339,8 @@ export function useNotes(
               return;
             }
             try {
-              // Detect external change by comparing lastModified.
-              const currentFile = await handle.getFile();
-              const knownMtime = lastMtimeRef.current.get(id);
-              if (
-                knownMtime !== undefined &&
-                currentFile.lastModified !== knownMtime
-              ) {
-                const diskContent = await currentFile.text();
-                setConflict({
-                  id,
-                  title: note.title,
-                  mine: note.content,
-                  disk: diskContent,
-                  diskMtime: currentFile.lastModified,
-                });
-                setSaveStatus('save-failed');
+              const result = await checkExternalChange(id);
+              if (result === 'conflict') {
                 timers.delete(id);
                 return;
               }
@@ -335,8 +369,36 @@ export function useNotes(
         }, 500)
       );
     },
-    [isDiskMode, markPermissionLost]
+    [isDiskMode, markPermissionLost, checkExternalChange]
   );
+
+  const selectNote = useCallback(
+    async (id: string | null) => {
+      if (id && id !== activeId) {
+        await checkExternalChange(id);
+      }
+      setActiveId(id);
+    },
+    [activeId, checkExternalChange]
+  );
+
+  // Re-check the active note when the window regains focus / becomes visible.
+  useEffect(() => {
+    if (!isDiskMode) return;
+    const onFocus = () => {
+      const id = activeIdRef.current;
+      if (id) checkExternalChange(id);
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') onFocus();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [isDiskMode, checkExternalChange]);
 
   const resolveConflictKeepMine = useCallback(async () => {
     const c = conflict;
@@ -646,7 +708,7 @@ export function useNotes(
     saveStatus,
     conflict,
     permissionLost,
-    setActiveId,
+    setActiveId: selectNote,
     createNote,
     createFolder,
     updateContent,
