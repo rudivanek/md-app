@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import {
   DndContext,
   closestCenter,
+  pointerWithin,
   PointerSensor,
   KeyboardSensor,
   useSensor,
@@ -10,6 +11,7 @@ import {
   type DragStartEvent,
   type DragEndEvent,
   type DragOverEvent,
+  type CollisionDetection,
 } from '@dnd-kit/core';
 import {
   SortableContext,
@@ -60,6 +62,8 @@ interface Props {
   folderName: string;
   onDisconnect: () => void;
   rootHandle: FileSystemDirectoryHandle | null;
+  autoEditId: string | null;
+  onClearAutoEdit: () => void;
 }
 
 export function Sidebar({
@@ -76,6 +80,8 @@ export function Sidebar({
   folderName,
   onDisconnect,
   rootHandle,
+  autoEditId,
+  onClearAutoEdit,
 }: Props) {
   const [search, setSearch] = useState('');
   const [dragId, setDragId] = useState<string | null>(null);
@@ -98,6 +104,19 @@ export function Sidebar({
   const flatIds = flatTree.map((f) => f.item.id);
 
   const draggedItem = dragId ? items.find((i) => i.id === dragId) : null;
+
+  // Folders get priority for "move inside" drops so a pointer anywhere over a
+  // folder row targets the folder, not an adjacent note for reordering.
+  const folderIds = useMemo(
+    () => new Set(items.filter((i) => i.type === 'folder').map((i) => i.id)),
+    [items]
+  );
+  const collisionDetection: CollisionDetection = (args) => {
+    const within = pointerWithin(args);
+    const folderHit = within.find((c) => folderIds.has(c.id as string));
+    if (folderHit) return [folderHit];
+    return closestCenter(args);
+  };
 
   function handleDragStart(event: DragStartEvent) {
     setDragId(event.active.id as string);
@@ -216,7 +235,7 @@ export function Sidebar({
         ) : (
           <DndContext
             sensors={sensors}
-            collisionDetection={closestCenter}
+            collisionDetection={collisionDetection}
             onDragStart={handleDragStart}
             onDragOver={handleDragOver}
             onDragEnd={handleDragEnd}
@@ -237,6 +256,8 @@ export function Sidebar({
                   onToggleFavorite={onToggleFavorite}
                   onDelete={onDelete}
                   onRename={onRename}
+                  autoEditId={autoEditId}
+                  onClearAutoEdit={onClearAutoEdit}
                 />
               ))}
             </SortableContext>

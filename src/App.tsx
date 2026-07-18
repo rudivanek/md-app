@@ -11,6 +11,7 @@ import {
   saveFolderHandle,
   clearFolderHandle,
 } from './db';
+import { verifyPermission } from './fileSystem';
 
 export default function App() {
   const [rootHandle, setRootHandle] = useState<FileSystemDirectoryHandle | null>(
@@ -27,11 +28,27 @@ export default function App() {
     let cancelled = false;
     (async () => {
       const stored = await loadFolderHandle();
-      if (!cancelled) {
-        setSavedHandle(stored);
-        setBootChecked(true);
-        if (!stored) setPickerOpen(false);
+      if (cancelled) return;
+      setSavedHandle(stored);
+      if (stored) {
+        // Try to silently reconnect: queryPermission needs no user gesture,
+        // and Chrome often remembers granted permission across reloads.
+        try {
+          const granted = await verifyPermission(stored, true);
+          if (cancelled) return;
+          if (granted) {
+            setRootHandle(stored);
+            setPickerOpen(false);
+          } else {
+            setPickerOpen(true);
+          }
+        } catch {
+          if (!cancelled) setPickerOpen(true);
+        }
+      } else {
+        setPickerOpen(false);
       }
+      setBootChecked(true);
     })();
     return () => {
       cancelled = true;
@@ -107,6 +124,11 @@ function AppShell({
     saveStatus,
     conflict,
     permissionLost,
+    buggyMoveArtifacts,
+    buggyWarningDismissed,
+    dismissBuggyMoveWarning,
+    autoEditId,
+    clearAutoEdit,
     setActiveId,
     createNote,
     createFolder,
@@ -146,6 +168,8 @@ function AppShell({
         folderName={rootHandle?.name ?? 'My Notes (local)'}
         onDisconnect={rootHandle ? onDisconnect : onOpenPicker}
         rootHandle={rootHandle}
+        autoEditId={autoEditId}
+        onClearAutoEdit={clearAutoEdit}
       />
       <main className="flex-1 flex flex-col min-w-0">
         <Editor
@@ -166,6 +190,35 @@ function AppShell({
       >
         <Info size={15} />
       </button>
+
+      {buggyMoveArtifacts.length > 0 && !buggyWarningDismissed && (
+        <div className="fixed bottom-3 left-3 z-30 max-w-md p-3 rounded-lg bg-[#2a1a1a] border border-[#5a3a3a] text-[#e0c0c0] text-xs shadow-lg">
+          <div className="flex items-start gap-2">
+            <span className="flex-1">
+              <strong className="text-[#e06c6c]">Cleanup needed:</strong>{' '}
+              {buggyMoveArtifacts.length} entr{buggyMoveArtifacts.length === 1 ? 'y' : 'ies'} renamed by an old bug (look for "[object FileSystemDirectoryHandle]" on disk) may need manual renaming:
+              <ul className="mt-1 ml-4 list-disc text-[#c0a0a0]">
+                {buggyMoveArtifacts.slice(0, 5).map((it) => (
+                  <li key={it.id} className="truncate">
+                    {it.type === 'note' ? it.fileName : it.name}
+                  </li>
+                ))}
+                {buggyMoveArtifacts.length > 5 && (
+                  <li className="text-[#806060]">
+                    +{buggyMoveArtifacts.length - 5} more
+                  </li>
+                )}
+              </ul>
+            </span>
+            <button
+              onClick={dismissBuggyMoveWarning}
+              className="flex-shrink-0 px-2 py-0.5 rounded bg-[#3a2a2a] hover:bg-[#4a3a3a] text-[#e0c0c0] text-xs"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
 
       {permissionLost && (
         <ReconnectPrompt

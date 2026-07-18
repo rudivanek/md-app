@@ -61,6 +61,11 @@ export interface UseNotesResult {
   saveStatus: SaveStatus;
   conflict: ConflictInfo | null;
   permissionLost: boolean;
+  buggyMoveArtifacts: Item[];
+  autoEditId: string | null;
+  clearAutoEdit: () => void;
+  dismissBuggyMoveWarning: () => void;
+  buggyWarningDismissed: boolean;
   setActiveId: (id: string | null) => void;
   createNote: (parentId?: string | null) => Promise<void>;
   createFolder: (parentId?: string | null) => Promise<void>;
@@ -90,6 +95,8 @@ export function useNotes(
   const [conflict, setConflict] = useState<ConflictInfo | null>(null);
   const [permissionLost, setPermissionLost] = useState(false);
   const [buggyMoveArtifacts, setBuggyMoveArtifacts] = useState<Item[]>([]);
+  const [autoEditId, setAutoEditId] = useState<string | null>(null);
+  const [buggyWarningDismissed, setBuggyWarningDismissed] = useState(false);
 
   const fileHandlesRef = useRef<Map<string, FileSystemFileHandle>>(new Map());
   const dirHandlesRef = useRef<Map<string, FileSystemDirectoryHandle>>(new Map());
@@ -203,7 +210,7 @@ export function useNotes(
           if (cancelled) return;
           const migrated = stored.map((it) =>
             it.type === 'note' && !it.fileName
-              ? { ...it, fileName: `${safeNameForNote(it.title)}.md` }
+              ? { ...it, fileName: safeNameForNote(it.title) }
               : it
           );
           setItems(migrated);
@@ -277,6 +284,7 @@ export function useNotes(
       }
       setItems((prev) => [...prev, note]);
       setActiveId(id);
+      setAutoEditId(id);
     },
     [getParentDir, getNextOrder, isDiskMode, markPermissionLost]
   );
@@ -310,6 +318,7 @@ export function useNotes(
         await saveItem(folder);
       }
       setItems((prev) => [...prev, folder]);
+      setAutoEditId(id);
     },
     [getParentDir, getNextOrder, isDiskMode, markPermissionLost]
   );
@@ -514,9 +523,16 @@ export function useNotes(
 
       setItems((prev) => prev.map((it) => (it.id === id ? updated : it)));
       if (!isDiskMode) await saveItem(updated);
+      setAutoEditId((cur) => (cur === id ? null : cur));
     },
     [getParentDir, isDiskMode, markPermissionLost]
   );
+
+  const clearAutoEdit = useCallback(() => setAutoEditId(null), []);
+
+  const dismissBuggyMoveWarning = useCallback(() => {
+    setBuggyWarningDismissed(true);
+  }, []);
 
   const toggleFavorite = useCallback(
     (id: string) => {
@@ -730,6 +746,10 @@ export function useNotes(
     conflict,
     permissionLost,
     buggyMoveArtifacts,
+    autoEditId,
+    clearAutoEdit,
+    dismissBuggyMoveWarning,
+    buggyWarningDismissed,
     setActiveId: selectNote,
     createNote,
     createFolder,

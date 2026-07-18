@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import {
@@ -24,6 +24,8 @@ interface Props {
   onToggleFavorite: (id: string) => void;
   onDelete: (id: string) => void;
   onRename: (id: string, name: string) => void;
+  autoEditId: string | null;
+  onClearAutoEdit: () => void;
 }
 
 export function SortableTreeItem({
@@ -36,9 +38,12 @@ export function SortableTreeItem({
   onToggleFavorite,
   onDelete,
   onRename,
+  autoEditId,
+  onClearAutoEdit,
 }: Props) {
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState('');
+  const inputRef = useRef<HTMLInputElement | null>(null);
 
   const {
     attributes,
@@ -48,6 +53,21 @@ export function SortableTreeItem({
     transition,
     isDragging,
   } = useSortable({ id: item.id });
+
+  useEffect(() => {
+    if (autoEditId === item.id && !editing) {
+      setEditValue(itemLabel(item));
+      setEditing(true);
+      onClearAutoEdit();
+      requestAnimationFrame(() => {
+        const el = inputRef.current;
+        if (el) {
+          el.focus();
+          el.select();
+        }
+      });
+    }
+  }, [autoEditId, item, editing, onClearAutoEdit]);
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -126,6 +146,7 @@ export function SortableTreeItem({
       {/* Label / rename input */}
       {editing ? (
         <input
+          ref={inputRef}
           autoFocus
           value={editValue}
           onChange={(e) => setEditValue(e.target.value)}
