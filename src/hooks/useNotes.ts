@@ -436,6 +436,26 @@ export function useNotes(
     };
   }, [isDiskMode, checkExternalChange]);
 
+  // Periodic backstop: if the tab never loses focus while a file is edited
+  // externally (e.g. side-by-side windows), the focus/visibility triggers
+  // never fire. Poll the active note's on-disk lastModified every 3.5s and
+  // reuse checkExternalChange so the comparison logic isn't duplicated.
+  // The interval is keyed on activeId so switching notes tears down the old
+  // timer and starts a fresh one for the new note — no leaked intervals and
+  // no checking a stale handle for the wrong note.
+  useEffect(() => {
+    if (!isDiskMode || !activeId) return;
+    const id = activeId;
+    const interval = window.setInterval(() => {
+      // Guard against the note being deleted or switched between ticks —
+      // checkExternalChange reads itemsRef.current and no-ops if the id is
+      // gone, and activeIdRef lets us skip work if the user already moved on.
+      if (activeIdRef.current !== id) return;
+      checkExternalChange(id);
+    }, 3500);
+    return () => window.clearInterval(interval);
+  }, [isDiskMode, activeId, checkExternalChange]);
+
   const resolveConflictKeepMine = useCallback(async () => {
     const c = conflict;
     if (!c) return;
