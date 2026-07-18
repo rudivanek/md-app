@@ -16,7 +16,7 @@ import {
   sortableKeyboardCoordinates,
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
-import { Plus, FolderPlus, Search } from 'lucide-react';
+import { Plus, FolderPlus, Search, Unlink } from 'lucide-react';
 import type { Item } from '../types';
 import { itemLabel } from '../types';
 import { SortableTreeItem } from './SortableTreeItem';
@@ -57,6 +57,8 @@ interface Props {
   onDelete: (id: string) => void;
   onRename: (id: string, name: string) => void;
   onMove: (dragId: string, targetId: string, position: 'before' | 'after' | 'inside') => void;
+  folderName: string;
+  onDisconnect: () => void;
 }
 
 export function Sidebar({
@@ -70,6 +72,8 @@ export function Sidebar({
   onDelete,
   onRename,
   onMove,
+  folderName,
+  onDisconnect,
 }: Props) {
   const [search, setSearch] = useState('');
   const [dragId, setDragId] = useState<string | null>(null);
@@ -136,7 +140,16 @@ export function Sidebar({
               <polyline points="10 9 9 9 8 9" />
             </svg>
           </div>
-          <span className="text-sm font-semibold text-[#e0e0e0] tracking-wide">My-Notes</span>
+          <span className="text-sm font-semibold text-[#e0e0e0] tracking-wide truncate">
+            {folderName}
+          </span>
+          <button
+            onClick={onDisconnect}
+            title="Disconnect folder"
+            className="ml-auto p-1 rounded text-[#555] hover:text-[#e06c6c] hover:bg-[#1e1e1e] transition-colors flex-shrink-0"
+          >
+            <Unlink size={13} />
+          </button>
         </div>
 
         {/* Search */}
