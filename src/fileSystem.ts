@@ -259,18 +259,46 @@ export async function moveEntryToFolder(
   targetDir: FileSystemDirectoryHandle,
   isFolder: boolean
 ): Promise<void> {
-  // Try native move() with directory target if supported.
-  const handle = await getEntry(sourceDir, name, isFolder);
-  const movable = handle as unknown as {
-    move?: (destination: FileSystemDirectoryHandle) => Promise<void>;
-  };
-  if (typeof movable.move === 'function') {
-    await movable.move(targetDir);
-    return;
-  }
-  // Fallback: copy into target, then delete from source.
+  // Always copy then delete. The native handle.move(destinationDir) overload
+  // only works inside OPFS; for real user folders it silently renames the
+  // entry in place to "[object FileSystemDirectoryHandle]" without relocating.
   await copyEntryToTarget(sourceDir, name, targetDir, isFolder);
+  // Verify the copy actually landed before deleting the source, so a failed
+  // copy can never result in data loss.
+  const verified = await existsInTarget(targetDir, name, isFolder);
+  if (!verified) {
+    throw new Error(
+      `Move verification failed: "${name}" was not found in the destination after copy. Aborting before source deletion.`
+    );
+  }
   await sourceDir.removeEntry(name, { recursive: isFolder });
+}
+
+async function existsInTarget(
+  dir: FileSystemDirectoryHandle,
+  name: string,
+  isFolder: boolean
+): Promise<boolean> {
+  try {
+    if (isFolder) {
+      await dir.getDirectoryHandle(name);
+    } else {
+      await dir.getFileHandle(name);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Detects files/folders renamed by the old buggy native move() fast path. */
+const BUGGY_MOVE_MARKER = '[object FileSystemDirectoryHandle]';
+
+export function findBuggyMoveArtifacts(items: Item[]): Item[] {
+  return items.filter((it) => {
+    const label = it.type === 'note' ? it.fileName : it.name;
+    return label?.includes(BUGGY_MOVE_MARKER);
+  });
 }
 
 async function copyEntryToTarget(

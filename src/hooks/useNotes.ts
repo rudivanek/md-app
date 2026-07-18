@@ -9,6 +9,7 @@ import {
   deleteEntryOnDisk,
   renameOnDisk,
   moveEntryToFolder,
+  findBuggyMoveArtifacts,
   verifyPermission,
   type ScanResult,
 } from '../fileSystem';
@@ -88,6 +89,7 @@ export function useNotes(
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('saved');
   const [conflict, setConflict] = useState<ConflictInfo | null>(null);
   const [permissionLost, setPermissionLost] = useState(false);
+  const [buggyMoveArtifacts, setBuggyMoveArtifacts] = useState<Item[]>([]);
 
   const fileHandlesRef = useRef<Map<string, FileSystemFileHandle>>(new Map());
   const dirHandlesRef = useRef<Map<string, FileSystemDirectoryHandle>>(new Map());
@@ -188,6 +190,14 @@ export function useNotes(
             .filter((i): i is Note => i.type === 'note')
             .sort((a, b) => a.order - b.order)[0];
           setActiveId(firstNote?.id ?? null);
+          const buggy = findBuggyMoveArtifacts(result.items);
+          if (buggy.length) {
+            setBuggyMoveArtifacts(buggy);
+            console.warn(
+              `[PimpMyCopy] Found ${buggy.length} entries renamed by the old buggy move() fast path (e.g. "[object FileSystemDirectoryHandle]"). These may need manual renaming on disk.`,
+              buggy
+            );
+          }
         } else {
           const stored = await loadAllItems();
           if (cancelled) return;
@@ -719,6 +729,7 @@ export function useNotes(
     saveStatus,
     conflict,
     permissionLost,
+    buggyMoveArtifacts,
     setActiveId: selectNote,
     createNote,
     createFolder,
