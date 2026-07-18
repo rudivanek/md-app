@@ -26,9 +26,9 @@ export type Item = Note | Folder;
 const MD_EXT = '.md';
 
 export function itemLabel(item: Item): string {
-  return item.type === 'note'
-    ? item.fileName.endsWith(MD_EXT)
-      ? item.fileName.slice(0, -MD_EXT.length)
-      : item.fileName
-    : item.name;
+  if (item.type === 'note') {
+    const name = item.fileName || item.title || 'Untitled';
+    return name.endsWith(MD_EXT) ? name.slice(0, -MD_EXT.length) : name;
+  }
+  return item.name;
 }

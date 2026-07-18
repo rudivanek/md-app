@@ -191,8 +191,13 @@ export function useNotes(
         } else {
           const stored = await loadAllItems();
           if (cancelled) return;
-          setItems(stored);
-          const firstNote = stored
+          const migrated = stored.map((it) =>
+            it.type === 'note' && !it.fileName
+              ? { ...it, fileName: `${safeNameForNote(it.title)}.md` }
+              : it
+          );
+          setItems(migrated);
+          const firstNote = migrated
             .filter((i): i is Note => i.type === 'note')
             .sort((a, b) => a.order - b.order)[0];
           setActiveId(firstNote?.id ?? null);
@@ -233,7 +238,7 @@ export function useNotes(
         id,
         type: 'note',
         title: 'Untitled',
-        fileName: '',
+        fileName: isDiskMode ? '' : 'Untitled.md',
         content: '',
         parentId,
         favorite: false,
