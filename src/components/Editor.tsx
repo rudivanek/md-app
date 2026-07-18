@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
-import { CheckCircle, Loader2, Eye, Code as CodeIcon, Columns2 } from 'lucide-react';
+import { CheckCircle, Loader2, Eye, Code as CodeIcon, Columns2, AlertCircle, X } from 'lucide-react';
 import type { Note } from '../types';
-import type { SaveStatus } from '../hooks/useNotes';
+import type { SaveStatus, ConflictInfo } from '../hooks/useNotes';
 import { FormattingToolbar } from './FormattingToolbar';
 import { MarkdownPreview } from './MarkdownPreview';
 import { useCodeMirror } from '../codemirror/useCodeMirror';
@@ -12,9 +12,21 @@ interface Props {
   note: Note | undefined;
   saveStatus: SaveStatus;
   onUpdateContent: (id: string, content: string) => void;
+  conflict: ConflictInfo | null;
+  onResolveKeepMine: () => void;
+  onResolveReload: () => void;
+  onDismissConflict: () => void;
 }
 
-export function Editor({ note, saveStatus, onUpdateContent }: Props) {
+export function Editor({
+  note,
+  saveStatus,
+  onUpdateContent,
+  conflict,
+  onResolveKeepMine,
+  onResolveReload,
+  onDismissConflict,
+}: Props) {
   const [mode, setMode] = useState<ViewMode>('source');
 
   const { parentRef, view } = useCodeMirror({
@@ -25,7 +37,6 @@ export function Editor({ note, saveStatus, onUpdateContent }: Props) {
     },
   });
 
-  // Focus editor when switching to source/split
   useEffect(() => {
     if (mode !== 'preview' && view) view.focus();
   }, [mode, view]);
@@ -77,19 +88,7 @@ export function Editor({ note, saveStatus, onUpdateContent }: Props) {
             {viewToggle('split', Columns2, 'Split', 'Split view')}
             {viewToggle('preview', Eye, 'Preview', 'Preview view')}
           </div>
-          <div className="flex items-center gap-1.5 text-xs">
-            {saveStatus === 'saving' ? (
-              <>
-                <Loader2 size={11} className="text-[#555] animate-spin" />
-                <span className="text-[#555]">Saving...</span>
-              </>
-            ) : (
-              <>
-                <CheckCircle size={11} className="text-[#4a9e6b]" />
-                <span className="text-[#4a4a4a]">Saved</span>
-              </>
-            )}
-          </div>
+          <SaveIndicator status={saveStatus} />
         </div>
       </header>
 
@@ -131,6 +130,123 @@ export function Editor({ note, saveStatus, onUpdateContent }: Props) {
             minute: '2-digit',
           })}
         </span>
+      </div>
+
+      {conflict && (
+        <ConflictDialog
+          conflict={conflict}
+          onKeepMine={onResolveKeepMine}
+          onReload={onResolveReload}
+          onDismiss={onDismissConflict}
+        />
+      )}
+    </div>
+  );
+}
+
+function SaveIndicator({ status }: { status: SaveStatus }) {
+  if (status === 'saving') {
+    return (
+      <div className="flex items-center gap-1.5 text-xs">
+        <Loader2 size={11} className="text-[#555] animate-spin" />
+        <span className="text-[#888]">Saving...</span>
+      </div>
+    );
+  }
+  if (status === 'save-failed') {
+    return (
+      <div className="flex items-center gap-1.5 text-xs">
+        <AlertCircle size={11} className="text-[#e06c6c]" />
+        <span className="text-[#e06c6c]">Save failed</span>
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-center gap-1.5 text-xs">
+      <CheckCircle size={11} className="text-[#4a9e6b]" />
+      <span className="text-[#4a4a4a]">Saved</span>
+    </div>
+  );
+}
+
+function ConflictDialog({
+  conflict,
+  onKeepMine,
+  onReload,
+  onDismiss,
+}: {
+  conflict: ConflictInfo;
+  onKeepMine: () => void;
+  onReload: () => void;
+  onDismiss: () => void;
+}) {
+  const [view, setView] = useState<'buttons' | 'both'>('buttons');
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div className="w-full max-w-3xl mx-6 bg-[#1e1e1e] border border-[#333] rounded-xl shadow-2xl overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[#2a2a2a]">
+          <div className="flex items-center gap-2.5">
+            <AlertCircle size={16} className="text-[#e0a040]" />
+            <h2 className="text-sm font-semibold text-[#e0e0e0]">
+              File changed on disk
+            </h2>
+          </div>
+          <button
+            onClick={onDismiss}
+            className="p-1 rounded text-[#555] hover:text-[#ccc] hover:bg-[#2a2a2a] transition-colors"
+          >
+            <X size={16} />
+          </button>
+        </div>
+        <div className="px-5 py-4">
+          <p className="text-xs text-[#888] leading-relaxed mb-4">
+            <span className="text-[#ccc]">{conflict.title}</span> was modified
+            outside this app since you started editing. Choose how to resolve.
+          </p>
+
+          {view === 'both' ? (
+            <div className="grid grid-cols-2 gap-3 mb-4">
+              <div>
+                <p className="text-[10px] uppercase tracking-wide text-[#666] mb-1.5">
+                  Mine
+                </p>
+                <pre className="text-[11px] text-[#aaa] bg-[#141414] border border-[#222] rounded-md p-3 max-h-64 overflow-auto whitespace-pre-wrap font-mono">
+                  {conflict.mine}
+                </pre>
+              </div>
+              <div>
+                <p className="text-[10px] uppercase tracking-wide text-[#666] mb-1.5">
+                  Disk
+                </p>
+                <pre className="text-[11px] text-[#aaa] bg-[#141414] border border-[#222] rounded-md p-3 max-h-64 overflow-auto whitespace-pre-wrap font-mono">
+                  {conflict.disk}
+                </pre>
+              </div>
+            </div>
+          ) : null}
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={onKeepMine}
+              className="px-3.5 py-2 rounded-md bg-[#7c6af7] text-xs font-semibold text-white hover:bg-[#8d7dff] transition-colors"
+            >
+              Keep mine
+            </button>
+            <button
+              onClick={onReload}
+              className="px-3.5 py-2 rounded-md bg-[#252525] border border-[#333] text-xs font-medium text-[#ddd] hover:bg-[#2a2a2a] transition-colors"
+            >
+              Reload from disk
+            </button>
+            <button
+              onClick={() => setView((v) => (v === 'buttons' ? 'both' : 'buttons'))}
+              className="px-3.5 py-2 rounded-md bg-transparent border border-[#333] text-xs font-medium text-[#aaa] hover:bg-[#222] transition-colors"
+            >
+              {view === 'both' ? 'Hide versions' : 'View both'}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );

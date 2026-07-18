@@ -3,6 +3,7 @@ import type { Item, Note, Folder } from '../types';
 import {
   scanDirectory,
   writeFileContent,
+  readFileContent,
   createNoteFile,
   createFolderOnDisk,
   deleteEntryOnDisk,
@@ -18,7 +19,15 @@ import {
   clearItems,
 } from '../db';
 
-export type SaveStatus = 'saved' | 'saving';
+export type SaveStatus = 'saved' | 'saving' | 'save-failed';
+
+export interface ConflictInfo {
+  id: string;
+  title: string;
+  mine: string;
+  disk: string;
+  diskMtime: number;
+}
 
 function extractTitle(content: string): string {
   const line = content.split('\n')[0].replace(/^#+\s*/, '').trim();
@@ -38,12 +47,24 @@ function genId(): string {
   return Math.random().toString(36).slice(2, 11);
 }
 
+function isPermissionError(err: unknown): boolean {
+  const e = err as DOMException | undefined;
+  if (!e) return false;
+  return (
+    e.name === 'SecurityError' ||
+    e.name === 'NotAllowedError' ||
+    e.name === 'AbortError'
+  );
+}
+
 export interface UseNotesResult {
   items: Item[];
   loading: boolean;
   activeId: string | null;
   activeNote: Note | undefined;
   saveStatus: SaveStatus;
+  conflict: ConflictInfo | null;
+  permissionLost: boolean;
   setActiveId: (id: string | null) => void;
   createNote: (parentId?: string | null) => Promise<void>;
   createFolder: (parentId?: string | null) => Promise<void>;
@@ -57,6 +78,10 @@ export interface UseNotesResult {
     targetId: string,
     position: 'before' | 'after' | 'inside'
   ) => Promise<void>;
+  resolveConflictKeepMine: () => Promise<void>;
+  resolveConflictReload: () => Promise<void>;
+  dismissConflict: () => void;
+  retryPermission: () => Promise<void>;
 }
 
 export function useNotes(
@@ -66,11 +91,14 @@ export function useNotes(
   const [loading, setLoading] = useState(true);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('saved');
+  const [conflict, setConflict] = useState<ConflictInfo | null>(null);
+  const [permissionLost, setPermissionLost] = useState(false);
 
   const fileHandlesRef = useRef<Map<string, FileSystemFileHandle>>(new Map());
   const dirHandlesRef = useRef<Map<string, FileSystemDirectoryHandle>>(new Map());
   const itemsRef = useRef<Item[]>([]);
   const saveTimerRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const lastMtimeRef = useRef<Map<string, number>>(new Map());
 
   const isDiskMode = rootHandle !== null;
 
@@ -78,22 +106,40 @@ export function useNotes(
     itemsRef.current = items;
   }, [items]);
 
+  const markPermissionLost = useCallback(() => {
+    setPermissionLost(true);
+    setSaveStatus('save-failed');
+  }, []);
+
   // Initial load: scan folder (disk mode) or load from IndexedDB (local mode).
   useEffect(() => {
     let cancelled = false;
     (async () => {
       setLoading(true);
+      setPermissionLost(false);
       try {
         if (isDiskMode && rootHandle) {
           const ok = await verifyPermission(rootHandle, true);
           if (!ok) {
+            markPermissionLost();
             setLoading(false);
             return;
           }
-          const result: ScanResult = await scanDirectory(rootHandle);
+          let result: ScanResult;
+          try {
+            result = await scanDirectory(rootHandle);
+          } catch (err) {
+            if (isPermissionError(err)) markPermissionLost();
+            setLoading(false);
+            return;
+          }
           if (cancelled) return;
           fileHandlesRef.current = result.fileHandles;
           dirHandlesRef.current = result.dirHandles;
+          lastMtimeRef.current.clear();
+          result.items.forEach((it) => {
+            if (it.type === 'note') lastMtimeRef.current.set(it.id, it.updatedAt);
+          });
           setItems(result.items);
           const firstNote = result.items
             .filter((i): i is Note => i.type === 'note')
@@ -115,7 +161,7 @@ export function useNotes(
     return () => {
       cancelled = true;
     };
-  }, [rootHandle, isDiskMode]);
+  }, [rootHandle, isDiskMode, markPermissionLost]);
 
   const activeNote = items.find(
     (i): i is Note => i.id === activeId && i.type === 'note'
@@ -139,6 +185,7 @@ export function useNotes(
   const createNote = useCallback(
     async (parentId: string | null = null) => {
       const id = genId();
+      const now = Date.now();
       const note: Note = {
         id,
         type: 'note',
@@ -147,20 +194,30 @@ export function useNotes(
         parentId,
         favorite: false,
         order: getNextOrder(parentId),
-        updatedAt: Date.now(),
-        createdAt: Date.now(),
+        updatedAt: now,
+        createdAt: now,
       };
       if (isDiskMode) {
-        const parentDir = getParentDir(parentId);
-        const { handle } = await createNoteFile(parentDir, 'Untitled');
-        fileHandlesRef.current.set(id, handle);
+        try {
+          const parentDir = getParentDir(parentId);
+          const { handle } = await createNoteFile(parentDir, 'Untitled');
+          fileHandlesRef.current.set(id, handle);
+          const file = await handle.getFile();
+          lastMtimeRef.current.set(id, file.lastModified);
+        } catch (err) {
+          if (isPermissionError(err)) {
+            markPermissionLost();
+            return;
+          }
+          throw err;
+        }
       } else {
         await saveItem(note);
       }
       setItems((prev) => [...prev, note]);
       setActiveId(id);
     },
-    [getParentDir, getNextOrder, isDiskMode]
+    [getParentDir, getNextOrder, isDiskMode, markPermissionLost]
   );
 
   const createFolder = useCallback(
@@ -177,15 +234,23 @@ export function useNotes(
         createdAt: Date.now(),
       };
       if (isDiskMode) {
-        const parentDir = getParentDir(parentId);
-        const dirHandle = await createFolderOnDisk(parentDir, 'New Folder');
-        dirHandlesRef.current.set(id, dirHandle);
+        try {
+          const parentDir = getParentDir(parentId);
+          const dirHandle = await createFolderOnDisk(parentDir, 'New Folder');
+          dirHandlesRef.current.set(id, dirHandle);
+        } catch (err) {
+          if (isPermissionError(err)) {
+            markPermissionLost();
+            return;
+          }
+          throw err;
+        }
       } else {
         await saveItem(folder);
       }
       setItems((prev) => [...prev, folder]);
     },
-    [getParentDir, getNextOrder, isDiskMode]
+    [getParentDir, getNextOrder, isDiskMode, markPermissionLost]
   );
 
   const updateContent = useCallback(
@@ -220,36 +285,134 @@ export function useNotes(
           }
           if (isDiskMode) {
             const handle = fileHandlesRef.current.get(id);
-            if (handle) {
-              try {
-                await writeFileContent(handle, note.content);
-              } catch (err) {
+            if (!handle) {
+              timers.delete(id);
+              if (timers.size === 0) setSaveStatus('saved');
+              return;
+            }
+            try {
+              // Detect external change by comparing lastModified.
+              const currentFile = await handle.getFile();
+              const knownMtime = lastMtimeRef.current.get(id);
+              if (
+                knownMtime !== undefined &&
+                currentFile.lastModified !== knownMtime
+              ) {
+                const diskContent = await currentFile.text();
+                setConflict({
+                  id,
+                  title: note.title,
+                  mine: note.content,
+                  disk: diskContent,
+                  diskMtime: currentFile.lastModified,
+                });
+                setSaveStatus('save-failed');
+                timers.delete(id);
+                return;
+              }
+              await writeFileContent(handle, note.content);
+              const written = await handle.getFile();
+              lastMtimeRef.current.set(id, written.lastModified);
+              setSaveStatus('saved');
+            } catch (err) {
+              if (isPermissionError(err)) {
+                markPermissionLost();
+              } else {
                 console.error('Failed to write file', err);
+                setSaveStatus('save-failed');
               }
             }
           } else {
             try {
               await saveItem(note);
+              setSaveStatus('saved');
             } catch (err) {
               console.error('Failed to persist note', err);
+              setSaveStatus('save-failed');
             }
           }
           timers.delete(id);
-          if (timers.size === 0) setSaveStatus('saved');
         }, 500)
       );
     },
-    [isDiskMode]
+    [isDiskMode, markPermissionLost]
   );
+
+  const resolveConflictKeepMine = useCallback(async () => {
+    const c = conflict;
+    if (!c) return;
+    const handle = fileHandlesRef.current.get(c.id);
+    if (handle) {
+      try {
+        await writeFileContent(handle, c.mine);
+        const written = await handle.getFile();
+        lastMtimeRef.current.set(c.id, written.lastModified);
+        setSaveStatus('saved');
+      } catch (err) {
+        if (isPermissionError(err)) markPermissionLost();
+        else setSaveStatus('save-failed');
+      }
+    }
+    setConflict(null);
+  }, [conflict, markPermissionLost]);
+
+  const resolveConflictReload = useCallback(async () => {
+    const c = conflict;
+    if (!c) return;
+    const handle = fileHandlesRef.current.get(c.id);
+    if (handle) {
+      try {
+        const content = await readFileContent(handle);
+        const file = await handle.getFile();
+        lastMtimeRef.current.set(c.id, file.lastModified);
+        setItems((prev) =>
+          prev.map((it) =>
+            it.id === c.id && it.type === 'note'
+              ? {
+                  ...it,
+                  content,
+                  title: extractTitle(content),
+                  updatedAt: file.lastModified,
+                }
+              : it
+          )
+        );
+        setSaveStatus('saved');
+      } catch (err) {
+        if (isPermissionError(err)) markPermissionLost();
+        else setSaveStatus('save-failed');
+      }
+    }
+    setConflict(null);
+  }, [conflict, markPermissionLost]);
+
+  const dismissConflict = useCallback(() => {
+    setConflict(null);
+    setSaveStatus('save-failed');
+  }, []);
+
+  const retryPermission = useCallback(async () => {
+    if (!rootHandle) {
+      setPermissionLost(false);
+      return;
+    }
+    try {
+      const ok = await verifyPermission(rootHandle, true);
+      if (ok) {
+        setPermissionLost(false);
+        setSaveStatus('saved');
+      }
+    } catch {
+      /* keep permissionLost */
+    }
+  }, [rootHandle]);
 
   const renameItem = useCallback(
     async (id: string, newName: string) => {
       const item = itemsRef.current.find((i) => i.id === id);
       if (!item) return;
       const isFolder = item.type === 'folder';
-      const newNameSafe = isFolder
-        ? safeNameForFolder(newName)
-        : newName;
+      const newNameSafe = isFolder ? safeNameForFolder(newName) : newName;
 
       if (isDiskMode) {
         const oldName = isFolder ? item.name : safeNameForNote(item.title);
@@ -259,6 +422,10 @@ export function useNotes(
         try {
           await renameOnDisk(parentDir, oldName, diskName, isFolder);
         } catch (err) {
+          if (isPermissionError(err)) {
+            markPermissionLost();
+            return;
+          }
           console.error('Rename failed on disk', err);
         }
       }
@@ -271,7 +438,7 @@ export function useNotes(
       setItems((prev) => prev.map((it) => (it.id === id ? updated : it)));
       if (!isDiskMode) await saveItem(updated);
     },
-    [getParentDir, isDiskMode]
+    [getParentDir, isDiskMode, markPermissionLost]
   );
 
   const toggleFavorite = useCallback(
@@ -316,6 +483,10 @@ export function useNotes(
         try {
           await deleteEntryOnDisk(parentDir, name, isFolder);
         } catch (err) {
+          if (isPermissionError(err)) {
+            markPermissionLost();
+            return;
+          }
           console.error('Delete failed on disk', err);
         }
       }
@@ -336,6 +507,7 @@ export function useNotes(
         dirHandlesRef.current.forEach((_, did) => {
           if (toDelete.includes(did)) dirHandlesRef.current.delete(did);
         });
+        toDelete.forEach((tid) => lastMtimeRef.current.delete(tid));
       } else {
         await Promise.all(toDelete.map((tid) => dbRemoveItem(tid)));
       }
@@ -348,7 +520,7 @@ export function useNotes(
         setActiveId(remaining[0]?.id ?? null);
       }
     },
-    [getParentDir, activeId, isDiskMode]
+    [getParentDir, activeId, isDiskMode, markPermissionLost]
   );
 
   const moveItem = useCallback(
@@ -361,7 +533,6 @@ export function useNotes(
       const target = itemsRef.current.find((i) => i.id === targetId);
       if (!dragged || !target || dragId === targetId) return;
 
-      // Prevent moving a folder into itself or its descendants.
       if (dragged.type === 'folder') {
         let cur: Item | undefined = target;
         while (cur) {
@@ -383,14 +554,22 @@ export function useNotes(
           try {
             await moveEntryToFolder(sourceDir, name, targetDir, isFolder);
           } catch (err) {
+            if (isPermissionError(err)) {
+              markPermissionLost();
+              return;
+            }
             console.error('Move failed on disk', err);
           }
-          if (isFolder) {
-            const newDir = await getParentDir(target.id).getDirectoryHandle(name);
-            dirHandlesRef.current.set(dragId, newDir);
-          } else {
-            const newFile = await getParentDir(target.id).getFileHandle(name);
-            fileHandlesRef.current.set(dragId, newFile);
+          try {
+            if (isFolder) {
+              const newDir = await getParentDir(target.id).getDirectoryHandle(name);
+              dirHandlesRef.current.set(dragId, newDir);
+            } else {
+              const newFile = await getParentDir(target.id).getFileHandle(name);
+              fileHandlesRef.current.set(dragId, newFile);
+            }
+          } catch (err) {
+            if (isPermissionError(err)) markPermissionLost();
           }
         }
       } else {
@@ -402,18 +581,26 @@ export function useNotes(
             try {
               await moveEntryToFolder(sourceDir, name, targetDir, isFolder);
             } catch (err) {
+              if (isPermissionError(err)) {
+                markPermissionLost();
+                return;
+              }
               console.error('Move failed on disk', err);
             }
-            if (isFolder) {
-              dirHandlesRef.current.set(
-                dragId,
-                await targetDir.getDirectoryHandle(name)
-              );
-            } else {
-              fileHandlesRef.current.set(
-                dragId,
-                await targetDir.getFileHandle(name)
-              );
+            try {
+              if (isFolder) {
+                dirHandlesRef.current.set(
+                  dragId,
+                  await targetDir.getDirectoryHandle(name)
+                );
+              } else {
+                fileHandlesRef.current.set(
+                  dragId,
+                  await targetDir.getFileHandle(name)
+                );
+              }
+            } catch (err) {
+              if (isPermissionError(err)) markPermissionLost();
             }
           }
         }
@@ -448,7 +635,7 @@ export function useNotes(
         return next;
       });
     },
-    [getParentDir, isDiskMode]
+    [getParentDir, isDiskMode, markPermissionLost]
   );
 
   return {
@@ -457,6 +644,8 @@ export function useNotes(
     activeId,
     activeNote,
     saveStatus,
+    conflict,
+    permissionLost,
     setActiveId,
     createNote,
     createFolder,
@@ -466,6 +655,10 @@ export function useNotes(
     toggleCollapsed,
     deleteItem,
     moveItem,
+    resolveConflictKeepMine,
+    resolveConflictReload,
+    dismissConflict,
+    retryPermission,
   };
 }
 

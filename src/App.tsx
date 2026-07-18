@@ -3,6 +3,9 @@ import { useNotes } from './hooks/useNotes';
 import { Sidebar } from './components/Sidebar';
 import { Editor } from './components/Editor';
 import { FolderPicker } from './components/FolderPicker';
+import { ReconnectPrompt } from './components/ReconnectPrompt';
+import { AboutPanel } from './components/AboutPanel';
+import { Info } from 'lucide-react';
 import {
   loadFolderHandle,
   saveFolderHandle,
@@ -17,10 +20,8 @@ export default function App() {
     null
   );
   const [bootChecked, setBootChecked] = useState(false);
-  // When true, show the folder picker screen. When false, run in local
-  // (IndexedDB-only) mode — used when the File System Access API is blocked
-  // (e.g. inside Bolt's preview iframe) or when the user skips connecting.
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [aboutOpen, setAboutOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -29,8 +30,6 @@ export default function App() {
       if (!cancelled) {
         setSavedHandle(stored);
         setBootChecked(true);
-        // If no folder has ever been connected, start in local mode so the
-        // app is usable immediately, even inside an iframe.
         if (!stored) setPickerOpen(false);
       }
     })();
@@ -76,6 +75,9 @@ export default function App() {
       rootHandle={rootHandle}
       onDisconnect={handleDisconnect}
       onOpenPicker={() => setPickerOpen(true)}
+      onOpenAbout={() => setAboutOpen(true)}
+      onCloseAbout={() => setAboutOpen(false)}
+      aboutOpen={aboutOpen}
     />
   );
 }
@@ -84,15 +86,27 @@ interface AppShellProps {
   rootHandle: FileSystemDirectoryHandle | null;
   onDisconnect: () => void;
   onOpenPicker: () => void;
+  onOpenAbout: () => void;
+  onCloseAbout: () => void;
+  aboutOpen: boolean;
 }
 
-function AppShell({ rootHandle, onDisconnect, onOpenPicker }: AppShellProps) {
+function AppShell({
+  rootHandle,
+  onDisconnect,
+  onOpenPicker,
+  onOpenAbout,
+  onCloseAbout,
+  aboutOpen,
+}: AppShellProps) {
   const {
     items,
     loading,
     activeId,
     activeNote,
     saveStatus,
+    conflict,
+    permissionLost,
     setActiveId,
     createNote,
     createFolder,
@@ -102,6 +116,10 @@ function AppShell({ rootHandle, onDisconnect, onOpenPicker }: AppShellProps) {
     toggleCollapsed,
     deleteItem,
     moveItem,
+    resolveConflictKeepMine,
+    resolveConflictReload,
+    dismissConflict,
+    retryPermission,
   } = useNotes(rootHandle);
 
   if (loading) {
@@ -134,8 +152,36 @@ function AppShell({ rootHandle, onDisconnect, onOpenPicker }: AppShellProps) {
           note={activeNote}
           saveStatus={saveStatus}
           onUpdateContent={updateContent}
+          conflict={conflict}
+          onResolveKeepMine={resolveConflictKeepMine}
+          onResolveReload={resolveConflictReload}
+          onDismissConflict={dismissConflict}
         />
       </main>
+
+      <button
+        onClick={onOpenAbout}
+        title="About"
+        className="fixed bottom-3 right-3 z-30 p-2 rounded-full bg-[#1e1e1e] border border-[#2a2a2a] text-[#555] hover:text-[#7c6af7] hover:border-[#3a3a3a] transition-colors shadow-md"
+      >
+        <Info size={15} />
+      </button>
+
+      {permissionLost && (
+        <ReconnectPrompt
+          onRetry={retryPermission}
+          onDismiss={() => {
+            /* keep prompt until resolved */
+          }}
+        />
+      )}
+
+      {aboutOpen && (
+        <AboutPanel
+          onClose={onCloseAbout}
+          isDiskMode={rootHandle !== null}
+        />
+      )}
     </div>
   );
 }

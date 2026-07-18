@@ -11,7 +11,7 @@ export interface ScanResult {
 const MD_EXT = '.md';
 
 function isHidden(name: string): boolean {
-  return name.startsWith('.');
+  return name.startsWith('.') || name === '.git';
 }
 
 function genId(): string {
