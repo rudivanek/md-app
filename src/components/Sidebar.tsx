@@ -59,6 +59,7 @@ interface Props {
   onMove: (dragId: string, targetId: string, position: 'before' | 'after' | 'inside') => void;
   folderName: string;
   onDisconnect: () => void;
+  rootHandle: FileSystemDirectoryHandle | null;
 }
 
 export function Sidebar({
@@ -74,6 +75,7 @@ export function Sidebar({
   onMove,
   folderName,
   onDisconnect,
+  rootHandle,
 }: Props) {
   const [search, setSearch] = useState('');
   const [dragId, setDragId] = useState<string | null>(null);
@@ -145,8 +147,8 @@ export function Sidebar({
           </span>
           <button
             onClick={onDisconnect}
-            title="Disconnect folder"
-            className="ml-auto p-1 rounded text-[#555] hover:text-[#e06c6c] hover:bg-[#1e1e1e] transition-colors flex-shrink-0"
+            title={rootHandle ? 'Disconnect folder' : 'Connect a folder'}
+            className="ml-auto p-1 rounded text-[#555] hover:text-[#7c6af7] hover:bg-[#1e1e1e] transition-colors flex-shrink-0"
           >
             <Unlink size={13} />
           </button>

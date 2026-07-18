@@ -17,6 +17,10 @@ export default function App() {
     null
   );
   const [bootChecked, setBootChecked] = useState(false);
+  // When true, show the folder picker screen. When false, run in local
+  // (IndexedDB-only) mode — used when the File System Access API is blocked
+  // (e.g. inside Bolt's preview iframe) or when the user skips connecting.
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -25,6 +29,9 @@ export default function App() {
       if (!cancelled) {
         setSavedHandle(stored);
         setBootChecked(true);
+        // If no folder has ever been connected, start in local mode so the
+        // app is usable immediately, even inside an iframe.
+        if (!stored) setPickerOpen(false);
       }
     })();
     return () => {
@@ -37,6 +44,7 @@ export default function App() {
       await saveFolderHandle(handle);
       setSavedHandle(handle);
       setRootHandle(handle);
+      setPickerOpen(false);
     },
     []
   );
@@ -45,6 +53,7 @@ export default function App() {
     await clearFolderHandle();
     setRootHandle(null);
     setSavedHandle(null);
+    setPickerOpen(false);
   }, []);
 
   if (!bootChecked) {
@@ -55,7 +64,7 @@ export default function App() {
     );
   }
 
-  if (!rootHandle) {
+  if (pickerOpen) {
     return (
       <FolderPicker onConnected={handleConnected} savedHandle={savedHandle} />
     );
@@ -63,19 +72,21 @@ export default function App() {
 
   return (
     <AppShell
-      key={rootHandle.name}
+      key={rootHandle?.name ?? 'local'}
       rootHandle={rootHandle}
       onDisconnect={handleDisconnect}
+      onOpenPicker={() => setPickerOpen(true)}
     />
   );
 }
 
 interface AppShellProps {
-  rootHandle: FileSystemDirectoryHandle;
+  rootHandle: FileSystemDirectoryHandle | null;
   onDisconnect: () => void;
+  onOpenPicker: () => void;
 }
 
-function AppShell({ rootHandle, onDisconnect }: AppShellProps) {
+function AppShell({ rootHandle, onDisconnect, onOpenPicker }: AppShellProps) {
   const {
     items,
     loading,
@@ -114,8 +125,9 @@ function AppShell({ rootHandle, onDisconnect }: AppShellProps) {
         onDelete={deleteItem}
         onRename={renameItem}
         onMove={moveItem}
-        folderName={rootHandle.name}
-        onDisconnect={onDisconnect}
+        folderName={rootHandle?.name ?? 'My Notes (local)'}
+        onDisconnect={rootHandle ? onDisconnect : onOpenPicker}
+        rootHandle={rootHandle}
       />
       <main className="flex-1 flex flex-col min-w-0">
         <Editor

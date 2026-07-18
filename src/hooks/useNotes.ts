@@ -11,6 +11,12 @@ import {
   verifyPermission,
   type ScanResult,
 } from '../fileSystem';
+import {
+  loadAllItems,
+  saveItem,
+  removeItem as dbRemoveItem,
+  clearItems,
+} from '../db';
 
 export type SaveStatus = 'saved' | 'saving';
 
@@ -26,6 +32,10 @@ function safeNameForNote(title: string): string {
 
 function safeNameForFolder(name: string): string {
   return name.replace(/[\\/:*?"<>|]/g, '_');
+}
+
+function genId(): string {
+  return Math.random().toString(36).slice(2, 11);
 }
 
 export interface UseNotesResult {
@@ -49,7 +59,9 @@ export interface UseNotesResult {
   ) => Promise<void>;
 }
 
-export function useNotes(rootHandle: FileSystemDirectoryHandle): UseNotesResult {
+export function useNotes(
+  rootHandle: FileSystemDirectoryHandle | null
+): UseNotesResult {
   const [items, setItems] = useState<Item[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -60,30 +72,42 @@ export function useNotes(rootHandle: FileSystemDirectoryHandle): UseNotesResult 
   const itemsRef = useRef<Item[]>([]);
   const saveTimerRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
+  const isDiskMode = rootHandle !== null;
+
   useEffect(() => {
     itemsRef.current = items;
   }, [items]);
 
-  // Initial scan of the connected folder.
+  // Initial load: scan folder (disk mode) or load from IndexedDB (local mode).
   useEffect(() => {
     let cancelled = false;
     (async () => {
       setLoading(true);
       try {
-        const ok = await verifyPermission(rootHandle, true);
-        if (!ok) {
-          setLoading(false);
-          return;
+        if (isDiskMode && rootHandle) {
+          const ok = await verifyPermission(rootHandle, true);
+          if (!ok) {
+            setLoading(false);
+            return;
+          }
+          const result: ScanResult = await scanDirectory(rootHandle);
+          if (cancelled) return;
+          fileHandlesRef.current = result.fileHandles;
+          dirHandlesRef.current = result.dirHandles;
+          setItems(result.items);
+          const firstNote = result.items
+            .filter((i): i is Note => i.type === 'note')
+            .sort((a, b) => a.order - b.order)[0];
+          setActiveId(firstNote?.id ?? null);
+        } else {
+          const stored = await loadAllItems();
+          if (cancelled) return;
+          setItems(stored);
+          const firstNote = stored
+            .filter((i): i is Note => i.type === 'note')
+            .sort((a, b) => a.order - b.order)[0];
+          setActiveId(firstNote?.id ?? null);
         }
-        const result: ScanResult = await scanDirectory(rootHandle);
-        if (cancelled) return;
-        fileHandlesRef.current = result.fileHandles;
-        dirHandlesRef.current = result.dirHandles;
-        setItems(result.items);
-        const firstNote = result.items
-          .filter((i): i is Note => i.type === 'note')
-          .sort((a, b) => a.order - b.order)[0];
-        setActiveId(firstNote?.id ?? null);
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -91,7 +115,7 @@ export function useNotes(rootHandle: FileSystemDirectoryHandle): UseNotesResult 
     return () => {
       cancelled = true;
     };
-  }, [rootHandle]);
+  }, [rootHandle, isDiskMode]);
 
   const activeNote = items.find(
     (i): i is Note => i.id === activeId && i.type === 'note'
@@ -99,9 +123,9 @@ export function useNotes(rootHandle: FileSystemDirectoryHandle): UseNotesResult 
 
   const getParentDir = useCallback(
     (parentId: string | null): FileSystemDirectoryHandle => {
-      if (parentId === null) return rootHandle;
+      if (parentId === null) return rootHandle!;
       const dir = dirHandlesRef.current.get(parentId);
-      if (!dir) return rootHandle;
+      if (!dir) return rootHandle!;
       return dir;
     },
     [rootHandle]
@@ -114,9 +138,7 @@ export function useNotes(rootHandle: FileSystemDirectoryHandle): UseNotesResult 
 
   const createNote = useCallback(
     async (parentId: string | null = null) => {
-      const parentDir = getParentDir(parentId);
-      const { handle } = await createNoteFile(parentDir, 'Untitled');
-      const id = Math.random().toString(36).slice(2, 11);
+      const id = genId();
       const note: Note = {
         id,
         type: 'note',
@@ -128,18 +150,22 @@ export function useNotes(rootHandle: FileSystemDirectoryHandle): UseNotesResult 
         updatedAt: Date.now(),
         createdAt: Date.now(),
       };
-      fileHandlesRef.current.set(id, handle);
+      if (isDiskMode) {
+        const parentDir = getParentDir(parentId);
+        const { handle } = await createNoteFile(parentDir, 'Untitled');
+        fileHandlesRef.current.set(id, handle);
+      } else {
+        await saveItem(note);
+      }
       setItems((prev) => [...prev, note]);
       setActiveId(id);
     },
-    [getParentDir, getNextOrder]
+    [getParentDir, getNextOrder, isDiskMode]
   );
 
   const createFolder = useCallback(
     async (parentId: string | null = null) => {
-      const parentDir = getParentDir(parentId);
-      const dirHandle = await createFolderOnDisk(parentDir, 'New Folder');
-      const id = Math.random().toString(36).slice(2, 11);
+      const id = genId();
       const folder: Folder = {
         id,
         type: 'folder',
@@ -150,110 +176,148 @@ export function useNotes(rootHandle: FileSystemDirectoryHandle): UseNotesResult 
         collapsed: false,
         createdAt: Date.now(),
       };
-      dirHandlesRef.current.set(id, dirHandle);
+      if (isDiskMode) {
+        const parentDir = getParentDir(parentId);
+        const dirHandle = await createFolderOnDisk(parentDir, 'New Folder');
+        dirHandlesRef.current.set(id, dirHandle);
+      } else {
+        await saveItem(folder);
+      }
       setItems((prev) => [...prev, folder]);
     },
-    [getParentDir, getNextOrder]
+    [getParentDir, getNextOrder, isDiskMode]
   );
 
-  const updateContent = useCallback((id: string, content: string) => {
-    setSaveStatus('saving');
-    setItems((prev) =>
-      prev.map((item) =>
-        item.id === id && item.type === 'note'
-          ? {
-              ...item,
-              content,
-              title: extractTitle(content),
-              updatedAt: Date.now(),
-            }
-          : item
-      )
-    );
+  const updateContent = useCallback(
+    (id: string, content: string) => {
+      setSaveStatus('saving');
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === id && item.type === 'note'
+            ? {
+                ...item,
+                content,
+                title: extractTitle(content),
+                updatedAt: Date.now(),
+              }
+            : item
+        )
+      );
 
-    const timers = saveTimerRef.current;
-    const existing = timers.get(id);
-    if (existing) clearTimeout(existing);
-    timers.set(
-      id,
-      setTimeout(async () => {
-        const note = itemsRef.current.find(
-          (i): i is Note => i.id === id && i.type === 'note'
-        );
-        const handle = fileHandlesRef.current.get(id);
-        if (note && handle) {
-          try {
-            await writeFileContent(handle, note.content);
-          } catch (err) {
-            console.error('Failed to write file', err);
+      const timers = saveTimerRef.current;
+      const existing = timers.get(id);
+      if (existing) clearTimeout(existing);
+      timers.set(
+        id,
+        setTimeout(async () => {
+          const note = itemsRef.current.find(
+            (i): i is Note => i.id === id && i.type === 'note'
+          );
+          if (!note) {
+            timers.delete(id);
+            if (timers.size === 0) setSaveStatus('saved');
+            return;
           }
-        }
-        timers.delete(id);
-        if (timers.size === 0) setSaveStatus('saved');
-      }, 500)
-    );
-  }, []);
+          if (isDiskMode) {
+            const handle = fileHandlesRef.current.get(id);
+            if (handle) {
+              try {
+                await writeFileContent(handle, note.content);
+              } catch (err) {
+                console.error('Failed to write file', err);
+              }
+            }
+          } else {
+            try {
+              await saveItem(note);
+            } catch (err) {
+              console.error('Failed to persist note', err);
+            }
+          }
+          timers.delete(id);
+          if (timers.size === 0) setSaveStatus('saved');
+        }, 500)
+      );
+    },
+    [isDiskMode]
+  );
 
   const renameItem = useCallback(
     async (id: string, newName: string) => {
       const item = itemsRef.current.find((i) => i.id === id);
       if (!item) return;
-      const parentDir = getParentDir(item.parentId);
       const isFolder = item.type === 'folder';
-      const oldName = isFolder ? item.name : safeNameForNote(item.title);
-      const newNameSafe = isFolder ? safeNameForFolder(newName) : safeNameForNote(newName);
+      const newNameSafe = isFolder
+        ? safeNameForFolder(newName)
+        : newName;
 
-      if (oldName === newNameSafe) return;
-
-      try {
-        await renameOnDisk(parentDir, oldName, newNameSafe, isFolder);
-      } catch (err) {
-        console.error('Rename failed on disk', err);
+      if (isDiskMode) {
+        const oldName = isFolder ? item.name : safeNameForNote(item.title);
+        const diskName = isFolder ? newNameSafe : safeNameForNote(newNameSafe);
+        if (oldName === diskName) return;
+        const parentDir = getParentDir(item.parentId);
+        try {
+          await renameOnDisk(parentDir, oldName, diskName, isFolder);
+        } catch (err) {
+          console.error('Rename failed on disk', err);
+        }
       }
 
-      setItems((prev) =>
-        prev.map((it) =>
-          it.id === id
-            ? it.type === 'folder'
-              ? { ...it, name: newNameSafe }
-              : { ...it, title: isFolder ? it.title : newName }
-            : it
-        )
-      );
+      const updated: Item =
+        item.type === 'folder'
+          ? { ...item, name: newNameSafe }
+          : { ...item, title: newNameSafe };
+
+      setItems((prev) => prev.map((it) => (it.id === id ? updated : it)));
+      if (!isDiskMode) await saveItem(updated);
     },
-    [getParentDir]
+    [getParentDir, isDiskMode]
   );
 
-  const toggleFavorite = useCallback((id: string) => {
-    setItems((prev) =>
-      prev.map((item) =>
-        item.id === id ? { ...item, favorite: !item.favorite } : item
-      )
-    );
-  }, []);
+  const toggleFavorite = useCallback(
+    (id: string) => {
+      setItems((prev) => {
+        const next = prev.map((item) =>
+          item.id === id ? { ...item, favorite: !item.favorite } : item
+        );
+        const updated = next.find((i) => i.id === id);
+        if (!isDiskMode && updated) saveItem(updated);
+        return next;
+      });
+    },
+    [isDiskMode]
+  );
 
-  const toggleCollapsed = useCallback((id: string) => {
-    setItems((prev) =>
-      prev.map((item) =>
-        item.id === id && item.type === 'folder'
-          ? { ...item, collapsed: !item.collapsed }
-          : item
-      )
-    );
-  }, []);
+  const toggleCollapsed = useCallback(
+    (id: string) => {
+      setItems((prev) => {
+        const next = prev.map((item) =>
+          item.id === id && item.type === 'folder'
+            ? { ...item, collapsed: !item.collapsed }
+            : item
+        );
+        const updated = next.find((i) => i.id === id);
+        if (!isDiskMode && updated) saveItem(updated);
+        return next;
+      });
+    },
+    [isDiskMode]
+  );
 
   const deleteItem = useCallback(
     async (id: string) => {
       const item = itemsRef.current.find((i) => i.id === id);
       if (!item) return;
-      const parentDir = getParentDir(item.parentId);
       const isFolder = item.type === 'folder';
-      const name = isFolder ? item.name : safeNameForNote(item.title);
 
-      try {
-        await deleteEntryOnDisk(parentDir, name, isFolder);
-      } catch (err) {
-        console.error('Delete failed on disk', err);
+      if (isDiskMode) {
+        const parentDir = getParentDir(item.parentId);
+        const name = isFolder ? item.name : safeNameForNote(item.title);
+        try {
+          await deleteEntryOnDisk(parentDir, name, isFolder);
+        } catch (err) {
+          console.error('Delete failed on disk', err);
+        }
       }
 
       const toDelete: string[] = [];
@@ -265,12 +329,16 @@ export function useNotes(rootHandle: FileSystemDirectoryHandle): UseNotesResult 
       };
       collect(id);
 
-      fileHandlesRef.current.forEach((_, fid) => {
-        if (toDelete.includes(fid)) fileHandlesRef.current.delete(fid);
-      });
-      dirHandlesRef.current.forEach((_, did) => {
-        if (toDelete.includes(did)) dirHandlesRef.current.delete(did);
-      });
+      if (isDiskMode) {
+        fileHandlesRef.current.forEach((_, fid) => {
+          if (toDelete.includes(fid)) fileHandlesRef.current.delete(fid);
+        });
+        dirHandlesRef.current.forEach((_, did) => {
+          if (toDelete.includes(did)) dirHandlesRef.current.delete(did);
+        });
+      } else {
+        await Promise.all(toDelete.map((tid) => dbRemoveItem(tid)));
+      }
 
       setItems((prev) => prev.filter((i) => !toDelete.includes(i.id)));
       if (toDelete.includes(activeId ?? '')) {
@@ -280,7 +348,7 @@ export function useNotes(rootHandle: FileSystemDirectoryHandle): UseNotesResult 
         setActiveId(remaining[0]?.id ?? null);
       }
     },
-    [getParentDir, activeId]
+    [getParentDir, activeId, isDiskMode]
   );
 
   const moveItem = useCallback(
@@ -304,77 +372,64 @@ export function useNotes(rootHandle: FileSystemDirectoryHandle): UseNotesResult 
 
       const isFolder = dragged.type === 'folder';
       const name = isFolder ? dragged.name : safeNameForNote(dragged.title);
-      const sourceDir = getParentDir(dragged.parentId);
 
       let newParentId: string | null;
-      let newOrder: number;
 
       if (position === 'inside' && target.type === 'folder') {
         newParentId = target.id;
-        const children = itemsRef.current.filter(
-          (i) => i.parentId === target.id
-        );
-        newOrder = children.reduce((m, i) => Math.max(m, i.order), -1) + 1;
-        const targetDir = getParentDir(target.id);
-        try {
-          await moveEntryToFolder(sourceDir, name, targetDir, isFolder);
-        } catch (err) {
-          console.error('Move failed on disk', err);
-        }
-        if (isFolder) {
-          const dirHandle = dirHandlesRef.current.get(dragId);
-          if (dirHandle) {
-            dirHandlesRef.current.set(dragId, await targetDir.getDirectoryHandle(name));
-          }
-        } else {
-          const fileHandle = fileHandlesRef.current.get(dragId);
-          if (fileHandle) {
-            fileHandlesRef.current.set(dragId, await targetDir.getFileHandle(name));
-          }
-        }
-      } else {
-        newParentId = target.parentId;
-        const siblings = itemsRef.current
-          .filter((i) => i.parentId === newParentId && i.id !== dragId)
-          .sort((a, b) => a.order - b.order);
-        const targetIdx = siblings.findIndex((i) => i.id === targetId);
-        const insertIdx = position === 'before' ? targetIdx : targetIdx + 1;
-        newOrder = insertIdx;
-
-        if (sourceDir !== getParentDir(newParentId)) {
-          const targetDir = getParentDir(newParentId);
+        if (isDiskMode) {
+          const sourceDir = getParentDir(dragged.parentId);
+          const targetDir = getParentDir(target.id);
           try {
             await moveEntryToFolder(sourceDir, name, targetDir, isFolder);
           } catch (err) {
             console.error('Move failed on disk', err);
           }
           if (isFolder) {
-            dirHandlesRef.current.set(
-              dragId,
-              await targetDir.getDirectoryHandle(name)
-            );
+            const newDir = await getParentDir(target.id).getDirectoryHandle(name);
+            dirHandlesRef.current.set(dragId, newDir);
           } else {
-            fileHandlesRef.current.set(
-              dragId,
-              await targetDir.getFileHandle(name)
-            );
+            const newFile = await getParentDir(target.id).getFileHandle(name);
+            fileHandlesRef.current.set(dragId, newFile);
+          }
+        }
+      } else {
+        newParentId = target.parentId;
+        if (isDiskMode) {
+          const sourceDir = getParentDir(dragged.parentId);
+          const targetDir = getParentDir(newParentId);
+          if (sourceDir !== targetDir) {
+            try {
+              await moveEntryToFolder(sourceDir, name, targetDir, isFolder);
+            } catch (err) {
+              console.error('Move failed on disk', err);
+            }
+            if (isFolder) {
+              dirHandlesRef.current.set(
+                dragId,
+                await targetDir.getDirectoryHandle(name)
+              );
+            } else {
+              fileHandlesRef.current.set(
+                dragId,
+                await targetDir.getFileHandle(name)
+              );
+            }
           }
         }
       }
 
       setItems((prev) => {
-        if (position === 'inside' && target.type === 'folder') {
-          return prev.map((i) =>
-            i.id === dragId
-              ? { ...i, parentId: newParentId, order: newOrder }
-              : i
-          );
-        }
         const siblings = prev
           .filter((i) => i.parentId === newParentId && i.id !== dragId)
           .sort((a, b) => a.order - b.order);
         const targetIdx = siblings.findIndex((i) => i.id === targetId);
-        const insertIdx = position === 'before' ? targetIdx : targetIdx + 1;
+        const insertIdx =
+          position === 'inside'
+            ? siblings.length
+            : position === 'before'
+            ? targetIdx
+            : targetIdx + 1;
         const reordered = [...siblings];
         reordered.splice(insertIdx, 0, {
           ...dragged,
@@ -382,12 +437,18 @@ export function useNotes(rootHandle: FileSystemDirectoryHandle): UseNotesResult 
         });
         const withOrders = reordered.map((item, idx) => ({ ...item, order: idx }));
         const updatedMap = new Map(withOrders.map((i) => [i.id, i]));
-        return prev.map((i) =>
+        const next = prev.map((i) =>
           updatedMap.has(i.id) ? (updatedMap.get(i.id) as Item) : i
         );
+        if (!isDiskMode) {
+          Promise.all(withOrders.map((it) => saveItem(it))).catch((err) =>
+            console.error('Failed to persist order', err)
+          );
+        }
+        return next;
       });
     },
-    [getParentDir]
+    [getParentDir, isDiskMode]
   );
 
   return {
@@ -407,3 +468,5 @@ export function useNotes(rootHandle: FileSystemDirectoryHandle): UseNotesResult 
     moveItem,
   };
 }
+
+export { clearItems };
