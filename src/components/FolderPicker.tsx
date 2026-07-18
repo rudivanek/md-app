@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { FolderOpen, AlertTriangle, Loader2, RefreshCw } from 'lucide-react';
+import { FolderOpen, AlertTriangle, Loader2, RefreshCw, ExternalLink } from 'lucide-react';
 import { isFsApiSupported, pickRootDirectory, verifyPermission } from '../fileSystem';
 
 interface Props {
@@ -7,20 +7,42 @@ interface Props {
   savedHandle: FileSystemDirectoryHandle | null;
 }
 
+function isCrossOriginIframe(): boolean {
+  try {
+    return window.self !== window.top;
+  } catch {
+    return true;
+  }
+}
+
 export function FolderPicker({ onConnected, savedHandle }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [errorDetail, setErrorDetail] = useState<string | null>(null);
   const supported = isFsApiSupported();
+  const inIframe = isCrossOriginIframe();
 
   async function handlePick() {
     setBusy(true);
     setError(null);
+    setErrorDetail(null);
     try {
       const handle = await pickRootDirectory();
       onConnected(handle);
     } catch (err) {
-      if ((err as DOMException)?.name !== 'AbortError') {
-        setError('Could not access that folder. Please try again.');
+      const e = err as DOMException;
+      if (e?.name === 'AbortError') {
+        // user cancelled the picker — no error needed
+      } else if (e?.name === 'SecurityError') {
+        setError('Blocked by browser security.');
+        setErrorDetail(
+          inIframe
+            ? 'The folder picker cannot run inside an embedded preview iframe. Open the app in its own tab and try again.'
+            : 'Make sure the page is served over HTTPS or http://localhost and that pop-ups are allowed.'
+        );
+      } else {
+        setError('Could not access that folder.');
+        setErrorDetail(`${e?.name ?? 'Error'}: ${e?.message ?? String(err)}`);
       }
     } finally {
       setBusy(false);
@@ -31,6 +53,7 @@ export function FolderPicker({ onConnected, savedHandle }: Props) {
     if (!savedHandle) return;
     setBusy(true);
     setError(null);
+    setErrorDetail(null);
     try {
       const granted = await verifyPermission(savedHandle, true);
       if (granted) {
@@ -38,10 +61,20 @@ export function FolderPicker({ onConnected, savedHandle }: Props) {
       } else {
         setError('Permission denied. Please choose the folder again.');
       }
-    } catch {
+    } catch (err) {
+      const e = err as DOMException;
       setError('Could not reconnect to the saved folder.');
+      setErrorDetail(`${e?.name ?? 'Error'}: ${e?.message ?? String(err)}`);
     } finally {
       setBusy(false);
+    }
+  }
+
+  function openInNewTab() {
+    try {
+      window.open(window.location.href, '_blank', 'noopener');
+    } catch {
+      /* ignore */
     }
   }
 
@@ -118,7 +151,34 @@ export function FolderPicker({ onConnected, savedHandle }: Props) {
               </button>
 
               {error && (
-                <p className="mt-4 text-xs text-[#e06c6c]">{error}</p>
+                <div className="mt-4 text-left px-3 py-2 rounded-md bg-[#2a1a1a] border border-[#3a2222]">
+                  <p className="text-xs text-[#e06c6c] font-medium">{error}</p>
+                  {errorDetail && (
+                    <p className="mt-1 text-[11px] text-[#a08070] leading-relaxed break-words">
+                      {errorDetail}
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {inIframe && supported && !error && (
+                <div className="mt-4 px-3 py-2 rounded-md bg-[#1e2a1e] border border-[#2a3a2a] text-left">
+                  <p className="text-[11px] text-[#8aaa8a] leading-relaxed">
+                    Tip: if the folder picker doesn't appear, open the app in
+                    its own tab — the picker is blocked inside embedded
+                    previews.
+                  </p>
+                </div>
+              )}
+
+              {inIframe && (
+                <button
+                  onClick={openInNewTab}
+                  className="mt-3 w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-transparent border border-[#333] text-xs font-medium text-[#aaa] hover:bg-[#222] hover:text-[#ddd] transition-colors"
+                >
+                  <ExternalLink size={14} />
+                  Open in new tab
+                </button>
               )}
 
               <p className="mt-6 text-[11px] text-[#555] leading-relaxed max-w-xs">
