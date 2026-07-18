@@ -29,11 +29,6 @@ export interface ConflictInfo {
   diskMtime: number;
 }
 
-function extractTitle(content: string): string {
-  const line = content.split('\n')[0].replace(/^#+\s*/, '').trim();
-  return line || 'Untitled';
-}
-
 function safeNameForNote(title: string): string {
   const base = title.replace(/[\\/:*?"<>|]/g, '_').trim() || 'Untitled';
   return base.endsWith('.md') ? base : base + '.md';
@@ -238,6 +233,7 @@ export function useNotes(
         id,
         type: 'note',
         title: 'Untitled',
+        fileName: '',
         content: '',
         parentId,
         favorite: false,
@@ -248,8 +244,10 @@ export function useNotes(
       if (isDiskMode) {
         try {
           const parentDir = getParentDir(parentId);
-          const { handle } = await createNoteFile(parentDir, 'Untitled');
+          const { handle, name } = await createNoteFile(parentDir, 'Untitled');
           fileHandlesRef.current.set(id, handle);
+          note.fileName = name;
+          note.title = name.replace(/\.md$/i, '');
           const file = await handle.getFile();
           lastMtimeRef.current.set(id, file.lastModified);
         } catch (err) {
@@ -310,7 +308,6 @@ export function useNotes(
             ? {
                 ...item,
                 content,
-                title: extractTitle(content),
                 updatedAt: Date.now(),
               }
             : item
@@ -433,7 +430,6 @@ export function useNotes(
               ? {
                   ...it,
                   content,
-                  title: extractTitle(content),
                   updatedAt: file.lastModified,
                 }
               : it
@@ -477,8 +473,10 @@ export function useNotes(
       const newNameSafe = isFolder ? safeNameForFolder(newName) : newName;
 
       if (isDiskMode) {
-        const oldName = isFolder ? item.name : safeNameForNote(item.title);
-        const diskName = isFolder ? newNameSafe : safeNameForNote(newNameSafe);
+        const oldName = isFolder ? item.name : item.fileName;
+        const diskName = isFolder
+          ? newNameSafe
+          : safeNameForNote(newNameSafe);
         if (oldName === diskName) return;
         const parentDir = getParentDir(item.parentId);
         try {
@@ -489,13 +487,15 @@ export function useNotes(
             return;
           }
           console.error('Rename failed on disk', err);
+          setSaveStatus('save-failed');
+          return;
         }
       }
 
       const updated: Item =
         item.type === 'folder'
           ? { ...item, name: newNameSafe }
-          : { ...item, title: newNameSafe };
+          : { ...item, title: newNameSafe, fileName: safeNameForNote(newNameSafe) };
 
       setItems((prev) => prev.map((it) => (it.id === id ? updated : it)));
       if (!isDiskMode) await saveItem(updated);
@@ -541,7 +541,7 @@ export function useNotes(
 
       if (isDiskMode) {
         const parentDir = getParentDir(item.parentId);
-        const name = isFolder ? item.name : safeNameForNote(item.title);
+        const name = isFolder ? item.name : item.fileName;
         try {
           await deleteEntryOnDisk(parentDir, name, isFolder);
         } catch (err) {
@@ -550,6 +550,8 @@ export function useNotes(
             return;
           }
           console.error('Delete failed on disk', err);
+          setSaveStatus('save-failed');
+          return;
         }
       }
 
@@ -604,7 +606,7 @@ export function useNotes(
       }
 
       const isFolder = dragged.type === 'folder';
-      const name = isFolder ? dragged.name : safeNameForNote(dragged.title);
+      const name = isFolder ? dragged.name : dragged.fileName;
 
       let newParentId: string | null;
 
@@ -621,6 +623,8 @@ export function useNotes(
               return;
             }
             console.error('Move failed on disk', err);
+            setSaveStatus('save-failed');
+            return;
           }
           try {
             if (isFolder) {
@@ -648,6 +652,8 @@ export function useNotes(
                 return;
               }
               console.error('Move failed on disk', err);
+              setSaveStatus('save-failed');
+              return;
             }
             try {
               if (isFolder) {

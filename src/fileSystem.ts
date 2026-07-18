@@ -18,11 +18,6 @@ function genId(): string {
   return Math.random().toString(36).slice(2, 11);
 }
 
-function extractTitle(content: string): string {
-  const line = content.split('\n')[0].replace(/^#+\s*/, '').trim();
-  return line || 'Untitled';
-}
-
 function safeNameForFolder(name: string): string {
   return name.replace(/[\\/:*?"<>|]/g, '_');
 }
@@ -99,12 +94,12 @@ export async function scanDirectory(
         const fileHandle = handle as FileSystemFileHandle;
         const file = await fileHandle.getFile();
         const content = await file.text();
-        const title = extractTitle(content);
         const id = genId();
         const note: Note = {
           id,
           type: 'note',
-          title,
+          title: name,
+          fileName: name,
           content,
           parentId,
           order: order++,
