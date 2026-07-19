@@ -20,9 +20,11 @@ interface Props {
   item: Item;
   depth: number;
   isActive: boolean;
+  isSelectedFolder: boolean;
   isDragOver: boolean;
   isAnyDragging: boolean;
   onSelect: (id: string) => void;
+  onSelectFolder: (id: string) => void;
   onToggleCollapsed: (id: string) => void;
   onToggleFavorite: (id: string) => void;
   onDelete: (id: string) => void;
@@ -36,9 +38,11 @@ export function SortableTreeItem({
   item,
   depth,
   isActive,
+  isSelectedFolder,
   isDragOver,
   isAnyDragging,
   onSelect,
+  onSelectFolder,
   onToggleCollapsed,
   onToggleFavorite,
   onDelete,
@@ -85,6 +89,10 @@ export function SortableTreeItem({
   const isFolder = item.type === 'folder';
   const collapsed = isFolder && item.collapsed;
   const isFolderDropTarget = isDragOver && isFolder && !isDragging;
+  // Selected-folder highlight is distinct from active-note highlight:
+  // a subtle green-tinted background + ring, shown only on folders.
+  const isSelectedFolderHighlight =
+    isSelectedFolder && isFolder && !isFolderDropTarget && !isDragging;
 
   function startRename() {
     setEditValue(itemLabel(item));
@@ -118,12 +126,14 @@ export function SortableTreeItem({
       className={`group flex items-center gap-1 pr-2 ${dropBandClass} cursor-pointer select-none transition-all ${
         isFolderDropTarget
           ? ''
+          : isSelectedFolderHighlight
+          ? 'bg-[#1e2a1e] text-[#7c6af7] ring-1 ring-[#3a5a3a] rounded-md'
           : isActive
           ? 'bg-[#252525] text-[#e0e0e0] rounded-md'
           : 'text-[#888] hover:bg-[#1e1e1e] hover:text-[#bbb] rounded-md'
       } ${isAnyDragging && !isFolder && !isDragOver ? 'opacity-50' : ''}`}
       onClick={() => {
-        if (isFolder) onToggleCollapsed(item.id);
+        if (isFolder) onSelectFolder(item.id);
         else onSelect(item.id);
       }}
       onDoubleClick={(e) => {

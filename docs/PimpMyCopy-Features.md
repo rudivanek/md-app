@@ -1,5 +1,5 @@
 <!--
-  Version: 1.2.0
+  Version: 1.3.0
   Last Updated: 2026-07-19T00:00:00Z
 -->
 
@@ -54,6 +54,18 @@ A drag-free way to file notes exactly, useful for verification and accessibility
 - Picking a folder calls `moveItem(noteId, folderId, 'inside')`; picking Root calls `moveItem(noteId, null, 'inside')`.
 - `moveItem` in `useNotes` accepts `targetId: null` to mean "move to root": it performs the same disk copy-then-delete + handle rebind + in-memory reorder as a cross-folder move, targeting `rootHandle` as the destination directory.
 - Modal closes on pick, Escape, or backdrop click.
+
+### Selected folder context for creation
+
+Mirrors Explorer/Finder's "new file here" behavior — new notes/folders land in the currently selected folder, not always root:
+
+- `Sidebar` tracks `selectedFolderId` (string | null; null = root), the "creation context."
+- **Clicking a folder row** both toggles expand/collapse (existing behavior) AND marks it as the selected folder via `onSelectFolder`. The selected folder gets a distinct highlight: a subtle green-tinted background (`bg-[#1e2a1e]`) with a 1px green ring (`ring-[#3a5a3a]`) — visually distinct from the active-note highlight (dark gray `bg-[#252525]`).
+- **Clicking a note** selects that note's parent folder as the creation context, so creating a new note while viewing a note inside "Projects/Ideas" creates the new note in "Projects/Ideas" too.
+- **Root indicator**: a "Root" button at the top of the tree (with Home icon) shows the current creation target. When selected (null context), it highlights green and shows a "create here" label. Clicking it resets the context to root. Clicking empty space below the tree also resets to root.
+- **+ New note / + New folder** buttons call `createNote(selectedFolderId)` / `createFolder(selectedFolderId)` instead of hardcoded `null`.
+- If the selected folder is deleted, the context automatically falls back to root.
+- Auto-edit-title-on-create behavior is unchanged regardless of which folder the new item lands in — `autoEditId` is set the same way in `createNote`/`createFolder`.
 
 ### Auto-focus title after note/folder creation
 

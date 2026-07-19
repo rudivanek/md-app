@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import {
   DndContext,
   closestCenter,
@@ -18,7 +18,7 @@ import {
   sortableKeyboardCoordinates,
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
-import { Plus, FolderPlus, Search, Unlink } from 'lucide-react';
+import { Plus, FolderPlus, Search, Unlink, Home } from 'lucide-react';
 import type { Item, Folder } from '../types';
 import { itemLabel } from '../types';
 import { SortableTreeItem } from './SortableTreeItem';
@@ -53,8 +53,8 @@ interface Props {
   items: Item[];
   activeNoteId: string | null;
   onSelectNote: (id: string) => void;
-  onCreateNote: () => void;
-  onCreateFolder: () => void;
+  onCreateNote: (parentId: string | null) => void;
+  onCreateFolder: (parentId: string | null) => void;
   onToggleFavorite: (id: string) => void;
   onToggleCollapsed: (id: string) => void;
   onDelete: (id: string) => void;
@@ -92,6 +92,32 @@ export function Sidebar({
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
   const [moveModalId, setMoveModalId] = useState<string | null>(null);
+  // "Selected folder" is the creation context — the folder new notes/folders
+  // land in when clicking + New. null means root. Clicking a folder selects
+  // it; clicking a note selects that note's parent folder; clicking the
+  // Root indicator or empty space below the tree resets to root.
+  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
+
+  // If the selected folder is deleted, fall back to root.
+  useEffect(() => {
+    if (
+      selectedFolderId !== null &&
+      !items.some((i) => i.id === selectedFolderId)
+    ) {
+      setSelectedFolderId(null);
+    }
+  }, [items, selectedFolderId]);
+
+  const handleSelectNote = (id: string) => {
+    const note = items.find((i) => i.id === id);
+    setSelectedFolderId(note?.parentId ?? null);
+    onSelectNote(id);
+  };
+
+  const handleFolderClick = (id: string) => {
+    setSelectedFolderId(id);
+    onToggleCollapsed(id);
+  };
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -222,14 +248,14 @@ export function Sidebar({
       {/* Action buttons */}
       <div className="px-3 pb-2 flex gap-1 flex-shrink-0">
         <button
-          onClick={onCreateNote}
+          onClick={() => onCreateNote(selectedFolderId)}
           className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-xs font-medium text-[#7c6af7] hover:bg-[#1e1e1e] hover:text-[#9d8fff] transition-colors"
         >
           <Plus size={13} />
           New note
         </button>
         <button
-          onClick={onCreateFolder}
+          onClick={() => onCreateFolder(selectedFolderId)}
           className="flex items-center justify-center gap-1 px-2 py-1.5 rounded-md text-xs font-medium text-[#555] hover:bg-[#1e1e1e] hover:text-[#888] transition-colors"
           title="New folder"
         >
@@ -257,7 +283,30 @@ export function Sidebar({
       </div>
 
       {/* Tree */}
-      <div className="flex-1 overflow-y-auto px-2 pb-4">
+      <div
+        className="flex-1 overflow-y-auto px-2 pb-4"
+        onClick={(e) => {
+          // Click on empty space below the tree resets creation context to root.
+          if (e.target === e.currentTarget) setSelectedFolderId(null);
+        }}
+      >
+        {/* Root context indicator */}
+        <button
+          onClick={() => setSelectedFolderId(null)}
+          className={`w-full flex items-center gap-1.5 px-2 py-1.5 mb-1 rounded-md text-xs transition-colors ${
+            selectedFolderId === null
+              ? 'bg-[#1e2a1e] text-[#7c6af7] ring-1 ring-[#3a5a3a]'
+              : 'text-[#555] hover:bg-[#1e1e1e] hover:text-[#888]'
+          }`}
+          title="New items will be created at root"
+        >
+          <Home size={12} className="flex-shrink-0" />
+          <span className="font-medium">Root</span>
+          {selectedFolderId === null && (
+            <span className="ml-auto text-[10px] text-[#4a6a4a]">create here</span>
+          )}
+        </button>
+
         {flatTree.length === 0 ? (
           <div className="px-2 py-6 text-center text-[#444] text-xs">
             {search ? 'No results' : 'No notes yet'}
@@ -280,9 +329,11 @@ export function Sidebar({
                   item={item}
                   depth={depth}
                   isActive={item.id === activeNoteId}
+                  isSelectedFolder={item.id === selectedFolderId && item.type === 'folder'}
                   isDragOver={overId === item.id && dragId !== item.id}
                   isAnyDragging={dragId !== null}
-                  onSelect={onSelectNote}
+                  onSelect={handleSelectNote}
+                  onSelectFolder={handleFolderClick}
                   onToggleCollapsed={onToggleCollapsed}
                   onToggleFavorite={onToggleFavorite}
                   onDelete={onDelete}

@@ -158,8 +158,8 @@ function AppShell({
         items={items}
         activeNoteId={activeId}
         onSelectNote={setActiveId}
-        onCreateNote={() => createNote(null)}
-        onCreateFolder={() => createFolder(null)}
+        onCreateNote={(parentId) => createNote(parentId)}
+        onCreateFolder={(parentId) => createFolder(parentId)}
         onToggleFavorite={toggleFavorite}
         onToggleCollapsed={toggleCollapsed}
         onDelete={deleteItem}
