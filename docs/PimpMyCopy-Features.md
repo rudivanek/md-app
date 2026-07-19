@@ -1,6 +1,6 @@
 <!--
-  Version: 1.1.0
-  Last Updated: 2026-07-18T00:00:00Z
+  Version: 1.2.0
+  Last Updated: 2026-07-19T00:00:00Z
 -->
 
 # PimpMyCopy Features
@@ -40,8 +40,20 @@ On boot, `App.tsx` loads any previously-saved folder handle via `loadFolderHandl
 Replaces the default `closestCenter`-only collision detection with a hybrid `collisionDetection` that gives folder rows priority for "move inside" drops:
 
 - Uses `pointerWithin` to find pointer-over candidates; if any candidate is a folder, that folder is the sole collision target — so dropping anywhere over a folder row unambiguously triggers "move inside" rather than competing with "reorder near this note".
-- Falls back to `closestCenter` for note-vs-note reordering when no folder is under the pointer.
-- Folder rows show a distinct drop-zone highlight (ring + tint) via `isDragOver && isFolder` in `SortableTreeItem`, visually distinct from the reorder indicator between notes.
+- When a folder is expanded, its visible children also count as "inside" that folder via a `childToFolder` map — dropping on a child moves into the parent folder, not next to the child. The entire expanded subtree is one drop target.
+- Falls back to `closestCenter` for note-vs-note reordering when no folder (or folder child) is under the pointer.
+- Folder rows show a distinct, enlarged drop-zone highlight during drag: a taller padded band (`py-[14px]`) with a 2px ring and tinted background, visually distinct from the thin reorder indicator between notes. Notes dim to 50% opacity while a drag is active so folders "pop" as targets.
+- Action buttons (favorite/delete/menu) are hidden during an active drag so they don't reduce the drop-target hit area.
+
+### "Move to folder..." non-drag fallback
+
+A drag-free way to file notes exactly, useful for verification and accessibility:
+
+- Each note row has a "..." (MoreHorizontal) menu button in its hover actions that opens a `MoveToFolderModal`.
+- The modal lists "Root (no folder)" plus all existing folders by name, with folder icons.
+- Picking a folder calls `moveItem(noteId, folderId, 'inside')`; picking Root calls `moveItem(noteId, null, 'inside')`.
+- `moveItem` in `useNotes` accepts `targetId: null` to mean "move to root": it performs the same disk copy-then-delete + handle rebind + in-memory reorder as a cross-folder move, targeting `rootHandle` as the destination directory.
+- Modal closes on pick, Escape, or backdrop click.
 
 ### Auto-focus title after note/folder creation
 

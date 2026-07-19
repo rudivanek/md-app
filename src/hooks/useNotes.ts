@@ -82,7 +82,7 @@ export interface UseNotesResult {
   deleteItem: (id: string) => Promise<void>;
   moveItem: (
     dragId: string,
-    targetId: string,
+    targetId: string | null,
     position: 'before' | 'after' | 'inside'
   ) => Promise<void>;
   resolveConflictKeepMine: () => Promise<void>;
@@ -656,12 +656,69 @@ export function useNotes(
   const moveItem = useCallback(
     async (
       dragId: string,
-      targetId: string,
+      targetId: string | null,
       position: 'before' | 'after' | 'inside'
     ) => {
       const dragged = itemsRef.current.find((i) => i.id === dragId);
+      if (!dragged) return;
+      // null targetId means "move to root" (position 'inside' into root).
+      if (targetId === null) {
+        if (dragged.parentId === null) return;
+        const isFolder = dragged.type === 'folder';
+        const name = isFolder ? dragged.name : (dragged as Note).fileName;
+        if (isDiskMode) {
+          const sourceDir = getParentDir(dragged.parentId);
+          const targetDir = rootHandle!;
+          if (sourceDir !== targetDir) {
+            try {
+              await moveEntryToFolder(sourceDir, name, targetDir, isFolder);
+            } catch (err) {
+              if (isPermissionError(err)) {
+                markPermissionLost();
+                return;
+              }
+              console.error('Move to root failed on disk', err);
+              setSaveStatus('save-failed');
+              return;
+            }
+            try {
+              if (isFolder) {
+                dirHandlesRef.current.set(
+                  dragId,
+                  await targetDir.getDirectoryHandle(name)
+                );
+              } else {
+                fileHandlesRef.current.set(
+                  dragId,
+                  await targetDir.getFileHandle(name)
+                );
+              }
+            } catch (err) {
+              if (isPermissionError(err)) markPermissionLost();
+            }
+          }
+        }
+        setItems((prev) => {
+          const siblings = prev
+            .filter((i) => i.parentId === null && i.id !== dragId)
+            .sort((a, b) => a.order - b.order);
+          const reordered = [...siblings, { ...dragged, parentId: null as string | null }];
+          const withOrders = reordered.map((item, idx) => ({ ...item, order: idx }));
+          const updatedMap = new Map(withOrders.map((i) => [i.id, i]));
+          const next = prev.map((i) =>
+            updatedMap.has(i.id) ? (updatedMap.get(i.id) as Item) : i
+          );
+          if (!isDiskMode) {
+            Promise.all(withOrders.map((it) => saveItem(it))).catch((err) =>
+              console.error('Failed to persist order', err)
+            );
+          }
+          return next;
+        });
+        return;
+      }
       const target = itemsRef.current.find((i) => i.id === targetId);
-      if (!dragged || !target || dragId === targetId) return;
+      if (!target || dragId === targetId) return;
 
       if (dragged.type === 'folder') {
         let cur: Item | undefined = target;

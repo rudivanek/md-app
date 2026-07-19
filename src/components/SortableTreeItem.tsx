@@ -10,6 +10,8 @@ import {
   Star,
   Trash2,
   GripVertical,
+  MoreHorizontal,
+  MoveRight,
 } from 'lucide-react';
 import type { Item } from '../types';
 import { itemLabel } from '../types';
@@ -19,11 +21,13 @@ interface Props {
   depth: number;
   isActive: boolean;
   isDragOver: boolean;
+  isAnyDragging: boolean;
   onSelect: (id: string) => void;
   onToggleCollapsed: (id: string) => void;
   onToggleFavorite: (id: string) => void;
   onDelete: (id: string) => void;
   onRename: (id: string, name: string) => void;
+  onMoveToFolder: (id: string) => void;
   autoEditId: string | null;
   onClearAutoEdit: () => void;
 }
@@ -33,11 +37,13 @@ export function SortableTreeItem({
   depth,
   isActive,
   isDragOver,
+  isAnyDragging,
   onSelect,
   onToggleCollapsed,
   onToggleFavorite,
   onDelete,
   onRename,
+  onMoveToFolder,
   autoEditId,
   onClearAutoEdit,
 }: Props) {
@@ -78,6 +84,7 @@ export function SortableTreeItem({
 
   const isFolder = item.type === 'folder';
   const collapsed = isFolder && item.collapsed;
+  const isFolderDropTarget = isDragOver && isFolder && !isDragging;
 
   function startRename() {
     setEditValue(itemLabel(item));
@@ -95,17 +102,26 @@ export function SortableTreeItem({
     if (e.key === 'Escape') setEditing(false);
   }
 
+  // While a drag is active, folder rows get a taller, more prominent drop
+  // band so they're a bigger/easier target than a normal row. Notes get a
+  // subtle dim so folders visually "pop" as drop targets.
+  const dropBandClass = isAnyDragging && isFolder
+    ? isFolderDropTarget
+      ? 'py-[14px] ring-2 ring-[#7c6af7] bg-[#7c6af725] shadow-[0_0_0_3px_#7c6af720] rounded-md'
+      : 'py-[10px] ring-1 ring-[#3a3a3a] rounded-md'
+    : 'py-[5px]';
+
   return (
     <div
       ref={setNodeRef}
       style={style}
-      className={`group flex items-center gap-1 pr-2 py-[5px] rounded-md cursor-pointer select-none transition-colors ${
-        isDragOver && isFolder
-          ? 'ring-1 ring-[#7c6af7] bg-[#7c6af720]'
+      className={`group flex items-center gap-1 pr-2 ${dropBandClass} cursor-pointer select-none transition-all ${
+        isFolderDropTarget
+          ? ''
           : isActive
-          ? 'bg-[#252525] text-[#e0e0e0]'
-          : 'text-[#888] hover:bg-[#1e1e1e] hover:text-[#bbb]'
-      }`}
+          ? 'bg-[#252525] text-[#e0e0e0] rounded-md'
+          : 'text-[#888] hover:bg-[#1e1e1e] hover:text-[#bbb] rounded-md'
+      } ${isAnyDragging && !isFolder && !isDragOver ? 'opacity-50' : ''}`}
       onClick={() => {
         if (isFolder) onToggleCollapsed(item.id);
         else onSelect(item.id);
@@ -127,7 +143,7 @@ export function SortableTreeItem({
 
       {/* Folder chevron */}
       {isFolder ? (
-        <span className="flex-shrink-0 text-[#555]">
+        <span className={`flex-shrink-0 ${isFolderDropTarget ? 'text-[#7c6af7]' : 'text-[#555]'}`}>
           {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
         </span>
       ) : (
@@ -135,7 +151,7 @@ export function SortableTreeItem({
       )}
 
       {/* Icon */}
-      <span className={`flex-shrink-0 ${isActive ? 'text-[#7c6af7]' : 'text-[#444] group-hover:text-[#666]'}`}>
+      <span className={`flex-shrink-0 ${isFolderDropTarget ? 'text-[#7c6af7]' : isActive ? 'text-[#7c6af7]' : 'text-[#444] group-hover:text-[#666]'}`}>
         {isFolder ? (
           collapsed ? <FolderIcon size={13} /> : <FolderOpen size={13} />
         ) : (
@@ -156,39 +172,57 @@ export function SortableTreeItem({
           className="flex-1 min-w-0 bg-[#2a2a2a] border border-[#3a3a3a] rounded px-1 text-xs text-[#e0e0e0] focus:outline-none"
         />
       ) : (
-        <span className="flex-1 min-w-0 truncate text-xs font-medium">
+        <span className={`flex-1 min-w-0 truncate text-xs font-medium ${isFolderDropTarget ? 'text-[#9d8fff]' : ''}`}>
           {itemLabel(item)}
         </span>
       )}
 
-      {/* Action buttons */}
-      <span
-        onClick={(e) => {
-          e.stopPropagation();
-          onToggleFavorite(item.id);
-        }}
-        className={`flex-shrink-0 p-0.5 rounded transition-all ${
-          item.favorite
-            ? 'opacity-100 text-[#f5c542]'
-            : 'opacity-0 group-hover:opacity-60 text-[#555] hover:text-[#f5c542]'
-        }`}
-        role="button"
-        aria-label="Toggle favorite"
-      >
-        <Star size={11} fill={item.favorite ? 'currentColor' : 'none'} />
-      </span>
+      {/* Action buttons — hidden while a drag is in progress so they don't
+          interfere with the drop target hit area. */}
+      {!isAnyDragging && (
+        <>
+          <span
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleFavorite(item.id);
+            }}
+            className={`flex-shrink-0 p-0.5 rounded transition-all ${
+              item.favorite
+                ? 'opacity-100 text-[#f5c542]'
+                : 'opacity-0 group-hover:opacity-60 text-[#555] hover:text-[#f5c542]'
+            }`}
+            role="button"
+            aria-label="Toggle favorite"
+          >
+            <Star size={11} fill={item.favorite ? 'currentColor' : 'none'} />
+          </span>
 
-      <span
-        onClick={(e) => {
-          e.stopPropagation();
-          onDelete(item.id);
-        }}
-        className="flex-shrink-0 p-0.5 rounded opacity-0 group-hover:opacity-60 text-[#555] hover:text-[#e06c6c] hover:opacity-100 transition-all"
-        role="button"
-        aria-label="Delete"
-      >
-        <Trash2 size={11} />
-      </span>
+          <span
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete(item.id);
+            }}
+            className="flex-shrink-0 p-0.5 rounded opacity-0 group-hover:opacity-60 text-[#555] hover:text-[#e06c6c] hover:opacity-100 transition-all"
+            role="button"
+            aria-label="Delete"
+          >
+            <Trash2 size={11} />
+          </span>
+
+          <span
+            onClick={(e) => {
+              e.stopPropagation();
+              onMoveToFolder(item.id);
+            }}
+            className="flex-shrink-0 p-0.5 rounded opacity-0 group-hover:opacity-60 text-[#555] hover:text-[#7c6af7] hover:opacity-100 transition-all"
+            role="button"
+            aria-label="Move to folder"
+            title="Move to folder..."
+          >
+            <MoreHorizontal size={11} />
+          </span>
+        </>
+      )}
     </div>
   );
 }

@@ -19,10 +19,11 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
 import { Plus, FolderPlus, Search, Unlink } from 'lucide-react';
-import type { Item } from '../types';
+import type { Item, Folder } from '../types';
 import { itemLabel } from '../types';
 import { SortableTreeItem } from './SortableTreeItem';
 import { FavoritesSection } from './FavoritesSection';
+import { MoveToFolderModal } from './MoveToFolderModal';
 
 interface FlatItem {
   item: Item;
@@ -58,7 +59,11 @@ interface Props {
   onToggleCollapsed: (id: string) => void;
   onDelete: (id: string) => void;
   onRename: (id: string, name: string) => void;
-  onMove: (dragId: string, targetId: string, position: 'before' | 'after' | 'inside') => void;
+  onMove: (
+    dragId: string,
+    targetId: string | null,
+    position: 'before' | 'after' | 'inside'
+  ) => void;
   folderName: string;
   onDisconnect: () => void;
   rootHandle: FileSystemDirectoryHandle | null;
@@ -86,6 +91,7 @@ export function Sidebar({
   const [search, setSearch] = useState('');
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
+  const [moveModalId, setMoveModalId] = useState<string | null>(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -104,17 +110,41 @@ export function Sidebar({
   const flatIds = flatTree.map((f) => f.item.id);
 
   const draggedItem = dragId ? items.find((i) => i.id === dragId) : null;
+  const folders = useMemo(
+    () => items.filter((i) => i.type === 'folder') as Folder[],
+    [items]
+  );
 
   // Folders get priority for "move inside" drops so a pointer anywhere over a
   // folder row targets the folder, not an adjacent note for reordering.
+  // When a folder is expanded, its visible children also count as "inside"
+  // that folder — so dropping on a child moves into the parent, not next to
+  // the child. This makes the entire expanded subtree a single drop target.
   const folderIds = useMemo(
     () => new Set(items.filter((i) => i.type === 'folder').map((i) => i.id)),
     [items]
   );
+  const childToFolder = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const it of items) {
+      if (it.parentId && folderIds.has(it.parentId)) {
+        map.set(it.id, it.parentId);
+      }
+    }
+    return map;
+  }, [items, folderIds]);
   const collisionDetection: CollisionDetection = (args) => {
     const within = pointerWithin(args);
+    // Direct folder hit wins outright.
     const folderHit = within.find((c) => folderIds.has(c.id as string));
     if (folderHit) return [folderHit];
+    // Otherwise, if the pointer is over a child of an expanded folder,
+    // treat it as a drop into that folder.
+    const childHit = within.find((c) => childToFolder.has(c.id as string));
+    if (childHit) {
+      const folderId = childToFolder.get(childHit.id as string)!;
+      return [{ id: folderId }];
+    }
     return closestCenter(args);
   };
 
@@ -251,11 +281,13 @@ export function Sidebar({
                   depth={depth}
                   isActive={item.id === activeNoteId}
                   isDragOver={overId === item.id && dragId !== item.id}
+                  isAnyDragging={dragId !== null}
                   onSelect={onSelectNote}
                   onToggleCollapsed={onToggleCollapsed}
                   onToggleFavorite={onToggleFavorite}
                   onDelete={onDelete}
                   onRename={onRename}
+                  onMoveToFolder={(id) => setMoveModalId(id)}
                   autoEditId={autoEditId}
                   onClearAutoEdit={onClearAutoEdit}
                 />
@@ -274,6 +306,19 @@ export function Sidebar({
           </DndContext>
         )}
       </div>
+
+      <MoveToFolderModal
+        open={moveModalId !== null}
+        noteId={moveModalId}
+        folders={folders}
+        onPick={(folderId) => {
+          if (moveModalId) {
+            onMove(moveModalId, folderId, 'inside');
+          }
+          setMoveModalId(null);
+        }}
+        onClose={() => setMoveModalId(null)}
+      />
     </aside>
   );
 }
